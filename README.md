@@ -41,7 +41,7 @@ auth:
   rate_limit_burst: 20
 providers:
   - name: "openai"
-    base_url: "[https://api.openai.com](https://api.openai.com)"
+    base_url: "https://api.openai.com"
     api_key: "sk-your-openai-key"
     models:
       - "gpt-4o"
