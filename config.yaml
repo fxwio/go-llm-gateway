@@ -1,0 +1,35 @@
+server:
+  port: 8080
+  read_timeout: 10s
+
+auth:
+  # 允许访问网关的合法客户端 Token 列表
+  valid_tokens:
+    - "sk-my-gateway-token-001"
+    - "sk-my-gateway-token-002"
+  # 简单的全局限流：每秒允许多少个请求
+  rate_limit_qps: 10
+  rate_limit_burst: 20
+
+providers:
+  - name: "openai"
+    base_url: "https://api.openai.com"
+    api_key: "sk-your-openai-key" # 生产环境应从环境变量或 Vault 读取
+    models:
+      - "gpt-4o"
+      - "gpt-3.5-turbo"
+
+  - name: "anthropic"
+    base_url: "https://api.anthropic.com"
+    api_key: "sk-your-anthropic-key"
+    models:
+      - "claude-3-opus"  # 客户端请求这个名字，网关路由给 Anthropic
+      - "claude-3-sonnet"
+
+  - name: "siliconflow"
+    base_url: "https://api.siliconflow.cn"
+    api_key: "sk-kcmglxtuqszzixvizflyyqbmvhjhkzdakojyailqrainfzfl"
+    models:
+      - "Qwen/Qwen3.5-122B-A10B"
+      - "deepseek-3.2"
+  
