@@ -9,11 +9,17 @@ import (
 
 type Config struct {
 	Server    ServerConfig     `mapstructure:"server"`
-	Auth      AuthConfig       `mapstructure:"auth"` // 新增这行
+	Redis     RedisConfig      `mapstructure:"redis"`
+	Auth      AuthConfig       `mapstructure:"auth"`
 	Providers []ProviderConfig `mapstructure:"providers"`
 }
 
-// 新增 AuthConfig 结构体
+type RedisConfig struct {
+	Addr     string `mapstructure:"addr"`
+	Password string `mapstructure:"password"`
+	DB       int    `mapstructure:"db"`
+}
+
 type AuthConfig struct {
 	ValidTokens    []string `mapstructure:"valid_tokens"`
 	RateLimitQPS   float64  `mapstructure:"rate_limit_qps"`

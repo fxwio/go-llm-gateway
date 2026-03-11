@@ -11,6 +11,7 @@ import (
 
 	"github.com/fxwio/go-llm-gateway/internal/config"
 	"github.com/fxwio/go-llm-gateway/internal/router"
+	"github.com/fxwio/go-llm-gateway/pkg/cache"
 	"github.com/fxwio/go-llm-gateway/pkg/logger"
 )
 
@@ -19,6 +20,8 @@ func main() {
 	logger.InitLogger()
 
 	config.LoadConfig("config.yaml")
+
+	cache.InitRedis()
 
 	// 1. Init router & main engine
 	r := router.NewRouter()

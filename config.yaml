@@ -2,13 +2,19 @@ server:
   port: 8080
   read_timeout: 10s
 
+# 新增 Redis 配置
+redis:
+  addr: "localhost:6379"
+  password: "" # 本地测试先留空
+  db: 0
+
 auth:
   # 允许访问网关的合法客户端 Token 列表
   valid_tokens:
     - "sk-my-gateway-token-001"
     - "sk-my-gateway-token-002"
   # 简单的全局限流：每秒允许多少个请求
-  rate_limit_qps: 10
+  rate_limit_qps: 1
   rate_limit_burst: 20
 
 providers:
@@ -31,5 +37,5 @@ providers:
     api_key: "sk-kcmglxtuqszzixvizflyyqbmvhjhkzdakojyailqrainfzfl"
     models:
       - "Qwen/Qwen3.5-122B-A10B"
-      - "deepseek-3.2"
+      - "deepseek-ai/DeepSeek-R1"
   
