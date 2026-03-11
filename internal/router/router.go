@@ -12,10 +12,11 @@ func NewRouter() *http.ServeMux {
 	mux := http.NewServeMux()
 
 	// 【重点】组装中间件链条 (洋葱模型：从外到内执行)
-	// 顺序：限流 -> 鉴权 -> 路由拦截 -> 核心代理引擎
+	// 顺序：日志 -> 限流 -> 鉴权 -> 缓存 -> 路由拦截 -> 核心代理引擎
 	coreEngine := proxy.NewGatewayProxy()
 	routedHandler := middleware.ModelRouterMiddleware(coreEngine)
-	authedHandler := middleware.AuthMiddleware(routedHandler)
+	cachedHandler := middleware.CacheMiddleware(routedHandler)
+	authedHandler := middleware.AuthMiddleware(cachedHandler)
 	rateLimitHandler := middleware.RateLimitMiddleware(authedHandler)
 	finalChatHandler := middleware.AccessLogMiddleware(rateLimitHandler)
 
