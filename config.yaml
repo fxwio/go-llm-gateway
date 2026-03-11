@@ -14,7 +14,7 @@ auth:
     - "sk-my-gateway-token-001"
     - "sk-my-gateway-token-002"
   # 简单的全局限流：每秒允许多少个请求
-  rate_limit_qps: 1
+  rate_limit_qps: 10
   rate_limit_burst: 20
 
 providers:
@@ -33,7 +33,7 @@ providers:
       - "claude-3-sonnet"
 
   - name: "siliconflow"
-    base_url: "https://api.siliconflow.cn"
+    base_url: "https://api.fake.siliconflow.cn"
     api_key: "sk-kcmglxtuqszzixvizflyyqbmvhjhkzdakojyailqrainfzfl"
     models:
       - "Qwen/Qwen3.5-122B-A10B"
