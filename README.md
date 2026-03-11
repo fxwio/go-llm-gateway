@@ -49,21 +49,9 @@ providers:
 ```
 
 ### 2. Run with Docker
-Bash
+```Bash
 docker build -t go-llm-gateway .
 docker run -p 8080:8080 -v $(pwd)/config.yaml:/app/config.yaml go-llm-gateway
-3. Usage
-Use any standard OpenAI SDK or curl to interact with the gateway:
-
-```bash
-curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "Authorization: Bearer sk-my-gateway-token-001" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-4o",
-    "messages": [{"role": "user", "content": "Explain microservices in one sentence."}],
-    "stream": true
-  }'
 ```
 
 ### 3. Usage
