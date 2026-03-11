@@ -1,5 +1,6 @@
 # Go-LLM-Gateway 🚀
 
+[![CI Pipeline](https://github.com/fxwio/go-llm-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/fxwio/go-llm-gateway/actions/workflows/ci.yml)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/fxwio/go-llm-gateway?style=flat-square&logo=go)](https://go.dev/)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
 [![Docker Pulls](https://img.shields.io/badge/Docker-Ready-2496ED?style=flat-square&logo=docker&logoColor=white)](Dockerfile)
