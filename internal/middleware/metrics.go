@@ -2,7 +2,6 @@ package middleware
 
 import (
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/fxwio/go-llm-gateway/internal/metrics"
@@ -22,7 +21,6 @@ func MetricsMiddleware(next http.Handler) http.Handler {
 
 		// --- 请求彻底结束后，必定会执行到这里 ---
 		duration := time.Since(start).Seconds()
-		statusStr := strconv.Itoa(wrappedWriter.statusCode)
 
 		// 尝试提取路由上下文
 		provider := "unknown"
@@ -39,7 +37,7 @@ func MetricsMiddleware(next http.Handler) http.Handler {
 			cacheStatus = "MISS"
 		}
 
-		metrics.RequestTotal.WithLabelValues(provider, targetModel, statusStr, cacheStatus).Inc()
-		metrics.RequestDuration.WithLabelValues(provider, targetModel, cacheStatus, statusStr).Observe(duration)
+		metrics.RequestTotal.WithLabelValues(provider, targetModel, cacheStatus).Inc()
+		metrics.RequestDuration.WithLabelValues(provider, targetModel, cacheStatus).Observe(duration)
 	})
 }
