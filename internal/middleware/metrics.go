@@ -40,6 +40,6 @@ func MetricsMiddleware(next http.Handler) http.Handler {
 		}
 
 		metrics.RequestTotal.WithLabelValues(provider, targetModel, statusStr, cacheStatus).Inc()
-		metrics.RequestDuration.WithLabelValues(provider, targetModel, cacheStatus).Observe(duration)
+		metrics.RequestDuration.WithLabelValues(provider, targetModel, cacheStatus, statusStr).Observe(duration)
 	})
 }
