@@ -29,12 +29,21 @@ func main() {
 	// 1. Init router & main engine
 	r := router.NewRouter()
 
+	readTimeout, _ := time.ParseDuration(config.GlobalConfig.Server.ReadTimeout)
+	writeTimeout, _ := time.ParseDuration(config.GlobalConfig.Server.WriteTimeout)
+	if readTimeout == 0 {
+		readTimeout = 300 * time.Second
+	}
+	if writeTimeout == 0 {
+		writeTimeout = 300 * time.Second
+	}
+
 	srv := &http.Server{
 		Addr:    ":8080",
 		Handler: r,
 		// defend Slowloris
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 60 * time.Second,
+		ReadTimeout:  readTimeout,
+		WriteTimeout: writeTimeout,
 		IdleTimeout:  120 * time.Second,
 	}
 

@@ -209,3 +209,9 @@ func CacheMiddleware(next http.Handler) http.Handler {
 		}
 	})
 }
+
+func (rw *responseRecorder) Flush() {
+	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}

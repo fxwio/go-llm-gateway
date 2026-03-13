@@ -27,8 +27,9 @@ type AuthConfig struct {
 }
 
 type ServerConfig struct {
-	Port        int    `mapstructure:"port"`
-	ReadTimeout string `mapstructure:"read_timeout"`
+	Port         int    `mapstructure:"port"`
+	ReadTimeout  string `mapstructure:"read_timeout"`
+	WriteTimeout string `mapstructure:"write_timeout"`
 }
 
 type ProviderConfig struct {

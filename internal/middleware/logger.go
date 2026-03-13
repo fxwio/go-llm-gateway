@@ -51,3 +51,9 @@ func AccessLogMiddleware(next http.Handler) http.Handler {
 		)
 	})
 }
+
+func (rw *responseWriterWrapper) Flush() {
+	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
