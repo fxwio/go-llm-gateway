@@ -15,7 +15,8 @@ func NewRouter() *http.ServeMux {
 	// 顺序：日志 -> 限流 -> 鉴权 -> 缓存 -> 路由拦截 -> 核心代理引擎
 	coreEngine := proxy.NewGatewayProxy()
 	cachedHandler := middleware.CacheMiddleware(coreEngine)
-	routedHandler := middleware.ModelRouterMiddleware(cachedHandler)
+	metricsHandler := middleware.MetricsMiddleware(cachedHandler)
+	routedHandler := middleware.ModelRouterMiddleware(metricsHandler)
 	authedHandler := middleware.AuthMiddleware(routedHandler)
 	limitedHandler := middleware.RateLimitMiddleware(authedHandler)
 	finalChatHandler := middleware.AccessLogMiddleware(limitedHandler)

@@ -1,0 +1,7 @@
+global:
+  scrape_interval: 5s # 每 5 秒抓取一次数据，保证大屏的实时性
+
+scrape_configs:
+  - job_name: 'llm-gateway'
+    static_configs:
+      - targets: ['gateway:8080'] # 指向我们网关容器的 8080 端口

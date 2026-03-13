@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/fxwio/go-llm-gateway/internal/model"
 	"github.com/fxwio/go-llm-gateway/pkg/logger"
 	"go.uber.org/zap"
 )
@@ -23,20 +24,28 @@ func (rw *responseWriterWrapper) WriteHeader(code int) {
 func AccessLogMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-
-		// 包装 ResponseWriter，默认状态码设为 200
 		wrappedWriter := &responseWriterWrapper{ResponseWriter: w, statusCode: http.StatusOK}
 
-		// 放行给后续的中间件或路由
 		next.ServeHTTP(wrappedWriter, r)
 
 		duration := time.Since(start)
 
-		// 打印结构化日志
+		// 尝试从 Context 中获取模型路由信息（可能为空，比如请求 /health 接口时）
+		provider := "unknown"
+		targetModel := "unknown"
+		if ctxVal := r.Context().Value(GatewayContextKey); ctxVal != nil {
+			if gatewayCtx, ok := ctxVal.(*model.GatewayContext); ok {
+				provider = gatewayCtx.TargetProvider
+				targetModel = gatewayCtx.TargetModel
+			}
+		}
+
+		// 原有的日志打印
 		logger.Log.Info("Access Log",
 			zap.String("method", r.Method),
 			zap.String("path", r.URL.Path),
-			zap.String("ip", r.RemoteAddr),
+			zap.String("provider", provider),
+			zap.String("model", targetModel),
 			zap.Int("status", wrappedWriter.statusCode),
 			zap.Duration("latency", duration),
 		)
