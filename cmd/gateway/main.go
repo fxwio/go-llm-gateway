@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/fxwio/go-llm-gateway/internal/audit"
 	"github.com/fxwio/go-llm-gateway/internal/config"
 	"github.com/fxwio/go-llm-gateway/internal/router"
 	"github.com/fxwio/go-llm-gateway/pkg/cache"
@@ -16,10 +17,12 @@ import (
 )
 
 func main() {
+	config.LoadConfig("config.yaml")
 
 	logger.InitLogger()
+	defer logger.Sync()
 
-	config.LoadConfig("config.yaml")
+	audit.InitAuditor()
 
 	cache.InitRedis()
 
@@ -55,8 +58,6 @@ func main() {
 	if err := srv.Shutdown(ctx); err != nil {
 		log.Fatal("Server forced to shutdown:", err)
 	}
-
-	defer logger.Sync()
 
 	log.Println("Server exiting")
 
