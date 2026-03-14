@@ -22,7 +22,6 @@ var (
 			Help:    "Histogram of request latencies",
 			Buckets: []float64{1, 2, 5, 10, 30, 40, 50, 60, 80, 120, 180, 240, 300},
 		},
-		// 🚀 核心修改：新增 "status_code" 标签
 		[]string{"provider", "model", "cache_status"},
 	)
 

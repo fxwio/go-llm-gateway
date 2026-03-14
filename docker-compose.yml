@@ -1,7 +1,6 @@
 services:
-  # 1. 我们的旗舰级大模型网关
   gateway:
-    build: 
+    build:
       context: .
       dockerfile: Dockerfile
     container_name: llm-gateway
@@ -9,11 +8,12 @@ services:
       - "8080:8080"
     volumes:
       - ./config.yaml:/app/config.yaml
+    env_file:
+      - .env
     depends_on:
       - redis
     restart: always
 
-  # 2. 核心状态存储：Redis集群 (用于限流和缓存)
   redis:
     image: redis:alpine
     container_name: gateway-redis
@@ -21,7 +21,6 @@ services:
       - "6379:6379"
     restart: always
 
-  # 3. 监控引擎：Prometheus
   prometheus:
     image: prom/prometheus:latest
     container_name: gateway-prometheus
@@ -32,7 +31,6 @@ services:
     depends_on:
       - gateway
 
-  # 4. 数据可视化大屏：Grafana
   grafana:
     image: grafana/grafana:latest
     container_name: gateway-grafana
@@ -41,4 +39,4 @@ services:
     depends_on:
       - prometheus
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin # 设置默认登录密码为 admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
