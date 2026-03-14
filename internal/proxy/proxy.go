@@ -16,6 +16,7 @@ import (
 	"github.com/fxwio/go-llm-gateway/internal/adapter"
 	"github.com/fxwio/go-llm-gateway/internal/middleware"
 	"github.com/fxwio/go-llm-gateway/internal/model"
+	"github.com/fxwio/go-llm-gateway/internal/response"
 	"github.com/fxwio/go-llm-gateway/pkg/logger"
 	"github.com/sony/gobreaker"
 	"go.uber.org/zap"
@@ -58,27 +59,51 @@ func NewGatewayProxy() http.Handler {
 			},
 			ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 				if err == gobreaker.ErrOpenState {
-					http.Error(
+					response.WriteOpenAIError(
 						w,
-						"Service Unavailable: Downstream AI provider is temporarily blocked (Circuit Breaker Open)",
 						http.StatusServiceUnavailable,
+						"Downstream AI provider is temporarily unavailable.",
+						"server_error",
+						nil,
+						response.Ptr("circuit_breaker_open"),
 					)
 					return
 				}
 
-				http.Error(w, "Gateway Proxy Error: "+err.Error(), http.StatusBadGateway)
+				response.WriteOpenAIError(
+					w,
+					http.StatusBadGateway,
+					"Gateway proxy error: "+err.Error(),
+					"server_error",
+					nil,
+					response.Ptr("bad_gateway"),
+				)
 			},
 		}
 
 		gatewayProxy = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			gatewayCtx, err := getGatewayContext(r)
 			if err != nil {
-				http.Error(w, "Gateway context missing", http.StatusInternalServerError)
+				response.WriteOpenAIError(
+					w,
+					http.StatusInternalServerError,
+					"Gateway context missing.",
+					"server_error",
+					nil,
+					response.Ptr("missing_gateway_context"),
+				)
 				return
 			}
 
 			if _, err := parseAndCacheBaseURL(gatewayCtx.BaseURL); err != nil {
-				http.Error(w, "Invalid target URL", http.StatusInternalServerError)
+				response.WriteOpenAIError(
+					w,
+					http.StatusInternalServerError,
+					"Invalid target URL.",
+					"server_error",
+					nil,
+					response.Ptr("invalid_target_url"),
+				)
 				return
 			}
 
@@ -92,19 +117,31 @@ func NewGatewayProxy() http.Handler {
 func proxyDirector(req *http.Request) {
 	gatewayCtx, err := getGatewayContext(req)
 	if err != nil {
-		logger.Log.Error("Gateway context missing in proxy director")
+		logger.Log.Error("Gateway context missing in proxy director", requestMetaFields(req)...)
 		return
 	}
 
 	targetURL, err := parseAndCacheBaseURL(gatewayCtx.BaseURL)
 	if err != nil {
-		logger.Log.Error("Invalid target URL", zap.String("base_url", gatewayCtx.BaseURL), zap.Error(err))
+		fields := append([]zap.Field{
+			zap.String("base_url", gatewayCtx.BaseURL),
+			zap.Error(err),
+		}, requestMetaFields(req)...)
+		logger.Log.Error("Invalid target URL", fields...)
 		return
 	}
 
 	req.URL.Scheme = targetURL.Scheme
 	req.URL.Host = targetURL.Host
 	req.Host = targetURL.Host
+
+	if meta, ok := middleware.GetRequestMeta(req); ok {
+		req.Header.Set("X-Request-ID", meta.RequestID)
+		req.Header.Set("Traceparent", meta.TraceParent)
+		if meta.TraceState != "" {
+			req.Header.Set("Tracestate", meta.TraceState)
+		}
+	}
 
 	enrichStreamOptions(req)
 
@@ -117,7 +154,10 @@ func proxyDirector(req *http.Request) {
 		req.Header.Del("Authorization")
 
 		if err := adapter.TranslateOpenAIToAnthropic(req); err != nil {
-			logger.Log.Error("Failed to translate protocol", zap.Error(err))
+			fields := append([]zap.Field{
+				zap.Error(err),
+			}, requestMetaFields(req)...)
+			logger.Log.Error("Failed to translate protocol", fields...)
 		}
 	} else {
 		req.URL.Path = joinURLPath(targetURL.Path, req.URL.Path)
@@ -219,4 +259,14 @@ func joinURLPath(basePath, reqPath string) string {
 	default:
 		return strings.TrimRight(basePath, "/") + "/" + strings.TrimLeft(reqPath, "/")
 	}
+}
+
+func requestMetaFields(r *http.Request) []zap.Field {
+	if meta, ok := middleware.GetRequestMeta(r); ok {
+		return []zap.Field{
+			zap.String("request_id", meta.RequestID),
+			zap.String("trace_id", meta.TraceID),
+		}
+	}
+	return nil
 }

@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"strings"
 
@@ -29,9 +30,10 @@ type AuthConfig struct {
 }
 
 type ServerConfig struct {
-	Port         int    `mapstructure:"port"`
-	ReadTimeout  string `mapstructure:"read_timeout"`
-	WriteTimeout string `mapstructure:"write_timeout"`
+	Port              int      `mapstructure:"port"`
+	ReadTimeout       string   `mapstructure:"read_timeout"`
+	WriteTimeout      string   `mapstructure:"write_timeout"`
+	TrustedProxyCIDRs []string `mapstructure:"trusted_proxy_cidrs"`
 }
 
 type ProviderConfig struct {
@@ -84,8 +86,6 @@ func resolveProviderAPIKeys(cfg *Config) error {
 
 		envName := strings.TrimSpace(provider.APIKeyEnv)
 		if envName == "" {
-			// 允许某些本地/无鉴权的 OpenAI-compatible provider 不配置 key
-			// 例如本地 vLLM / Ollama / 内网网关
 			continue
 		}
 
@@ -111,6 +111,16 @@ func validateConfig(cfg *Config) error {
 
 	if len(cfg.Providers) == 0 {
 		return fmt.Errorf("at least one provider must be configured")
+	}
+
+	for _, cidr := range cfg.Server.TrustedProxyCIDRs {
+		cidr = strings.TrimSpace(cidr)
+		if cidr == "" {
+			continue
+		}
+		if _, _, err := net.ParseCIDR(cidr); err != nil {
+			return fmt.Errorf("invalid trusted proxy cidr %q: %w", cidr, err)
+		}
 	}
 
 	seenProviders := make(map[string]struct{}, len(cfg.Providers))

@@ -7,6 +7,7 @@ import (
 
 	"github.com/fxwio/go-llm-gateway/internal/config"
 	"github.com/fxwio/go-llm-gateway/internal/model"
+	"github.com/fxwio/go-llm-gateway/internal/response"
 )
 
 // 定义 context key 类型，避免与其他包的 Context Key 冲突
@@ -15,23 +16,43 @@ type contextKey string
 const GatewayContextKey contextKey = "gateway_ctx"
 
 // ModelRouterMiddleware 负责解析请求中的 model，并注入 GatewayContext。
-// 这里不再重复读取 r.Body，而是直接复用 BodyContextMiddleware 已经缓存好的 body。
 func ModelRouterMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		bodyCtx, ok := GetRequestBodyContext(r)
 		if !ok {
-			http.Error(w, "Request body context missing", http.StatusInternalServerError)
+			response.WriteOpenAIError(
+				w,
+				http.StatusInternalServerError,
+				"Request body context missing.",
+				"server_error",
+				nil,
+				response.Ptr("missing_body_context"),
+			)
 			return
 		}
 
 		var req model.ChatCompletionRequest
 		if err := json.Unmarshal(bodyCtx.RawBody, &req); err != nil {
-			http.Error(w, "Invalid JSON payload", http.StatusBadRequest)
+			response.WriteOpenAIError(
+				w,
+				http.StatusBadRequest,
+				"Invalid JSON payload.",
+				"invalid_request_error",
+				nil,
+				response.Ptr("invalid_json"),
+			)
 			return
 		}
 
 		if req.Model == "" {
-			http.Error(w, "Missing 'model' field in request", http.StatusBadRequest)
+			response.WriteOpenAIError(
+				w,
+				http.StatusBadRequest,
+				"Missing required field: model.",
+				"invalid_request_error",
+				response.Ptr("model"),
+				response.Ptr("missing_required_field"),
+			)
 			return
 		}
 
@@ -50,7 +71,14 @@ func ModelRouterMiddleware(next http.Handler) http.Handler {
 		}
 
 		if targetProvider == nil {
-			http.Error(w, "Model not supported or routed", http.StatusNotFound)
+			response.WriteOpenAIError(
+				w,
+				http.StatusNotFound,
+				"The model '"+req.Model+"' does not exist or is not available on this gateway.",
+				"invalid_request_error",
+				response.Ptr("model"),
+				response.Ptr("model_not_found"),
+			)
 			return
 		}
 

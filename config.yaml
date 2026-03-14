@@ -2,9 +2,14 @@ server:
   port: 8080
   read_timeout: 300s
   write_timeout: 300s
+  trusted_proxy_cidrs:
+    # - "127.0.0.1/32"
+    - "::1/128"
+    - "172.16.0.0/12"
+    - "192.168.0.0/16"
+    - "10.0.0.0/8"
 
 redis:
-  # addr: "redis:6379"
   addr: "localhost:6379"
   password: ""
   db: 0
@@ -38,9 +43,3 @@ providers:
     models:
       - "Qwen/Qwen3.5-122B-A10B"
       - "deepseek-ai/DeepSeek-R1"
-
-  # 如果你以后接本地 vLLM / Ollama / 内网兼容网关，不需要鉴权时可以这样配：
-  # - name: "local-vllm"
-  #   base_url: "http://host.docker.internal:8000"
-  #   models:
-  #     - "Qwen/Qwen2.5-7B-Instruct"

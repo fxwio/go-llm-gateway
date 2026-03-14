@@ -14,7 +14,7 @@ func MetricsMiddleware(next http.Handler) http.Handler {
 		start := time.Now()
 
 		// 包装 ResponseWriter 以便捕获真实的 HTTP 状态码
-		wrappedWriter := &responseWriterWrapper{ResponseWriter: w, statusCode: http.StatusOK}
+		wrappedWriter := &accessLogRecorder{ResponseWriter: w, statusCode: http.StatusOK}
 
 		// 放行给下层中间件（此时会一直阻塞，直到请求结束）
 		next.ServeHTTP(wrappedWriter, r)

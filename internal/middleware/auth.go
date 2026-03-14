@@ -1,25 +1,62 @@
 package middleware
 
 import (
+	"context"
 	"net/http"
 	"strings"
 
 	"github.com/fxwio/go-llm-gateway/internal/config"
+	"github.com/fxwio/go-llm-gateway/internal/response"
 )
 
-// AuthMiddleware 校验客户端发来的 Bearer Token 是否合法
+const ClientAuthContextKey contextKey = "client_auth_ctx"
+
+type ClientAuthContext struct {
+	Token string
+}
+
+// AuthMiddleware 校验客户端发来的 Bearer Token 是否合法。
+// 鉴权通过后，把“已验证通过的 token”放入 context，供后续限流等中间件复用。
 func AuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		authHeader := r.Header.Get("Authorization")
-		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
-			http.Error(w, "Unauthorized: Missing or invalid Authorization header", http.StatusUnauthorized)
+		authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
+		if authHeader == "" {
+			response.WriteOpenAIError(
+				w,
+				http.StatusUnauthorized,
+				"Missing Authorization header.",
+				"authentication_error",
+				nil,
+				response.Ptr("missing_authorization_header"),
+			)
 			return
 		}
 
-		// 提取 Token (去掉 "Bearer " 前缀)
-		clientToken := strings.TrimPrefix(authHeader, "Bearer ")
+		if !strings.HasPrefix(authHeader, "Bearer ") {
+			response.WriteOpenAIError(
+				w,
+				http.StatusUnauthorized,
+				"Invalid Authorization header. Expected 'Bearer <token>'.",
+				"authentication_error",
+				nil,
+				response.Ptr("invalid_authorization_header"),
+			)
+			return
+		}
 
-		// 校验 Token 是否在配置的白名单中
+		clientToken := strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
+		if clientToken == "" {
+			response.WriteOpenAIError(
+				w,
+				http.StatusUnauthorized,
+				"Missing bearer token.",
+				"authentication_error",
+				nil,
+				response.Ptr("missing_bearer_token"),
+			)
+			return
+		}
+
 		isValid := false
 		for _, validToken := range config.GlobalConfig.Auth.ValidTokens {
 			if clientToken == validToken {
@@ -27,13 +64,37 @@ func AuthMiddleware(next http.Handler) http.Handler {
 				break
 			}
 		}
-
 		if !isValid {
-			http.Error(w, "Forbidden: Invalid API Key", http.StatusForbidden)
+			response.WriteOpenAIError(
+				w,
+				http.StatusForbidden,
+				"Invalid API key provided.",
+				"authentication_error",
+				nil,
+				response.Ptr("invalid_api_key"),
+			)
 			return
 		}
 
-		// 鉴权通过，放行
-		next.ServeHTTP(w, r)
+		authCtx := &ClientAuthContext{
+			Token: clientToken,
+		}
+		ctx := context.WithValue(r.Context(), ClientAuthContextKey, authCtx)
+
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+func GetClientAuthContext(r *http.Request) (*ClientAuthContext, bool) {
+	ctxVal := r.Context().Value(ClientAuthContextKey)
+	if ctxVal == nil {
+		return nil, false
+	}
+
+	authCtx, ok := ctxVal.(*ClientAuthContext)
+	if !ok || authCtx == nil {
+		return nil, false
+	}
+
+	return authCtx, true
 }

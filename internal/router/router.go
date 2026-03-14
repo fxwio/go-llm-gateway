@@ -8,23 +8,21 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-// NewRouter 初始化全局路由
 func NewRouter() *http.ServeMux {
 	mux := http.NewServeMux()
 
-	// 顺序：
-	// 日志 -> 限流 -> 鉴权 -> 请求体限流&复用 -> 模型路由 -> 指标 -> 缓存 -> 核心代理
+	// request meta -> access log -> auth -> rate limit -> body -> model router -> metrics -> cache -> proxy
 	coreEngine := proxy.NewGatewayProxy()
 	cachedHandler := middleware.CacheMiddleware(coreEngine)
 	metricsHandler := middleware.MetricsMiddleware(cachedHandler)
 	routedHandler := middleware.ModelRouterMiddleware(metricsHandler)
 	bodyHandler := middleware.BodyContextMiddleware(middleware.DefaultMaxRequestBodyBytes, routedHandler)
-	authedHandler := middleware.AuthMiddleware(bodyHandler)
-	limitedHandler := middleware.RateLimitMiddleware(authedHandler)
-	finalChatHandler := middleware.AccessLogMiddleware(limitedHandler)
+	limitedHandler := middleware.RateLimitMiddleware(bodyHandler)
+	authedHandler := middleware.AuthMiddleware(limitedHandler)
+	accessLogHandler := middleware.AccessLogMiddleware(authedHandler)
+	finalChatHandler := middleware.RequestMetaMiddleware(accessLogHandler)
 
 	mux.Handle("POST /v1/chat/completions", finalChatHandler)
-
 	mux.Handle("/metrics", promhttp.Handler())
 
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {

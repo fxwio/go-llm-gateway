@@ -12,6 +12,7 @@ import (
 
 	"github.com/fxwio/go-llm-gateway/internal/audit"
 	"github.com/fxwio/go-llm-gateway/internal/model"
+	"github.com/fxwio/go-llm-gateway/internal/response"
 	"github.com/fxwio/go-llm-gateway/pkg/cache"
 	"github.com/fxwio/go-llm-gateway/pkg/logger"
 	"github.com/fxwio/go-llm-gateway/pkg/redact"
@@ -19,7 +20,6 @@ import (
 	"go.uber.org/zap"
 )
 
-// responseRecorder 包装 ResponseWriter，用于拦截反向代理返回的数据
 type responseRecorder struct {
 	http.ResponseWriter
 	body             *bytes.Buffer
@@ -27,6 +27,8 @@ type responseRecorder struct {
 	isStream         bool
 	gatewayCtx       *model.GatewayContext
 	clientIP         string
+	requestID        string
+	traceID          string
 	tokenFingerprint string
 
 	usageMu    sync.Mutex
@@ -50,7 +52,6 @@ func (rw *responseRecorder) Write(b []byte) (int, error) {
 	return rw.ResponseWriter.Write(b)
 }
 
-// extractUsageFromChunk 解析 SSE 数据块并更新最新账单
 func (rw *responseRecorder) extractUsageFromChunk(chunk []byte) {
 	lines := bytes.Split(chunk, []byte("\n"))
 	for _, line := range lines {
@@ -74,12 +75,18 @@ func (rw *responseRecorder) extractUsageFromChunk(chunk []byte) {
 	}
 }
 
-// CacheMiddleware 核心缓存与审计计费中间件
 func CacheMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		bodyCtx, ok := GetRequestBodyContext(r)
 		if !ok {
-			http.Error(w, "Request body context missing", http.StatusInternalServerError)
+			response.WriteOpenAIError(
+				w,
+				http.StatusInternalServerError,
+				"Request body context missing.",
+				"server_error",
+				nil,
+				response.Ptr("missing_body_context"),
+			)
 			return
 		}
 
@@ -93,8 +100,19 @@ func CacheMiddleware(next http.Handler) http.Handler {
 			}
 		}
 
-		clientIP := r.RemoteAddr
+		clientIP := extractClientIP(r)
 		tokenFingerprint := redact.TokenFingerprint(r.Header.Get("Authorization"))
+
+		var requestID, traceID string
+		if meta, ok := GetRequestMeta(r); ok {
+			requestID = meta.RequestID
+			traceID = meta.TraceID
+		}
+
+		logFields := []zap.Field{
+			zap.String("request_id", requestID),
+			zap.String("trace_id", traceID),
+		}
 
 		var cacheKey string
 
@@ -105,7 +123,9 @@ func CacheMiddleware(next http.Handler) http.Handler {
 			ctx := context.Background()
 			cachedResp, err := cache.RedisClient.Get(ctx, cacheKey).Result()
 			if err == nil && cachedResp != "" {
-				logger.Log.Info("Cache Hit", zap.String("key", cacheKey))
+				logger.Log.Info("Cache Hit", append([]zap.Field{
+					zap.String("key", cacheKey),
+				}, logFields...)...)
 
 				w.Header().Set("Content-Type", "application/json")
 				w.Header().Set("X-Cache", "HIT")
@@ -114,6 +134,8 @@ func CacheMiddleware(next http.Handler) http.Handler {
 				if gCtx != nil {
 					audit.PushRecord(audit.AuditRecord{
 						Timestamp:        time.Now(),
+						RequestID:        requestID,
+						TraceID:          traceID,
 						ClientIP:         clientIP,
 						TokenFingerprint: tokenFingerprint,
 						Provider:         gCtx.TargetProvider,
@@ -128,10 +150,14 @@ func CacheMiddleware(next http.Handler) http.Handler {
 			}
 
 			if err != nil && err != redis.Nil {
-				logger.Log.Warn("Redis get error", zap.Error(err))
+				logger.Log.Warn("Redis get error", append([]zap.Field{
+					zap.Error(err),
+				}, logFields...)...)
 			}
 
-			logger.Log.Info("Cache Miss, forwarding request...", zap.String("key", cacheKey))
+			logger.Log.Info("Cache Miss, forwarding request...", append([]zap.Field{
+				zap.String("key", cacheKey),
+			}, logFields...)...)
 		}
 
 		recorder := &responseRecorder{
@@ -141,6 +167,8 @@ func CacheMiddleware(next http.Handler) http.Handler {
 			isStream:         isStream,
 			gatewayCtx:       gCtx,
 			clientIP:         clientIP,
+			requestID:        requestID,
+			traceID:          traceID,
 			tokenFingerprint: tokenFingerprint,
 		}
 
@@ -154,6 +182,8 @@ func CacheMiddleware(next http.Handler) http.Handler {
 			if recorder.finalUsage != nil && recorder.gatewayCtx != nil {
 				audit.PushRecord(audit.AuditRecord{
 					Timestamp:        time.Now(),
+					RequestID:        recorder.requestID,
+					TraceID:          recorder.traceID,
 					ClientIP:         recorder.clientIP,
 					TokenFingerprint: recorder.tokenFingerprint,
 					Provider:         recorder.gatewayCtx.TargetProvider,
@@ -170,14 +200,18 @@ func CacheMiddleware(next http.Handler) http.Handler {
 		if recorder.statusCode == http.StatusOK {
 			respBytes := append([]byte(nil), recorder.body.Bytes()...)
 
-			go func(cacheKey string, payload []byte) {
+			go func(cacheKey string, payload []byte, requestID string, traceID string) {
 				err := cache.RedisClient.Set(context.Background(), cacheKey, payload, 24*time.Hour).Err()
 				if err != nil {
-					logger.Log.Error("Failed to save cache", zap.Error(err))
+					logger.Log.Error("Failed to save cache",
+						zap.Error(err),
+						zap.String("request_id", requestID),
+						zap.String("trace_id", traceID),
+					)
 				}
-			}(cacheKey, respBytes)
+			}(cacheKey, respBytes, requestID, traceID)
 
-			go func(payload []byte, gatewayCtx *model.GatewayContext, clientIP string, tokenFingerprint string) {
+			go func(payload []byte, gatewayCtx *model.GatewayContext, clientIP string, requestID string, traceID string, tokenFingerprint string) {
 				if gatewayCtx == nil {
 					return
 				}
@@ -186,6 +220,8 @@ func CacheMiddleware(next http.Handler) http.Handler {
 				if err := json.Unmarshal(payload, &llmResp); err == nil {
 					audit.PushRecord(audit.AuditRecord{
 						Timestamp:        time.Now(),
+						RequestID:        requestID,
+						TraceID:          traceID,
 						ClientIP:         clientIP,
 						TokenFingerprint: tokenFingerprint,
 						Provider:         gatewayCtx.TargetProvider,
@@ -196,9 +232,13 @@ func CacheMiddleware(next http.Handler) http.Handler {
 						CostStatus:       "api_call",
 					})
 				} else {
-					logger.Log.Error("Audit JSON Unmarshal Failed", zap.Error(err))
+					logger.Log.Error("Audit JSON Unmarshal Failed",
+						zap.Error(err),
+						zap.String("request_id", requestID),
+						zap.String("trace_id", traceID),
+					)
 				}
-			}(respBytes, gCtx, clientIP, tokenFingerprint)
+			}(respBytes, gCtx, clientIP, requestID, traceID, tokenFingerprint)
 		}
 	})
 }

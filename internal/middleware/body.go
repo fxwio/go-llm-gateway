@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+
+	"github.com/fxwio/go-llm-gateway/internal/response"
 )
 
 const (
@@ -15,7 +17,6 @@ const (
 )
 
 // RequestBodyContext 保存已经读取并复用的请求体。
-// 这一层是“只读一次 body”的基础设施。
 type RequestBodyContext struct {
 	RawBody  []byte
 	IsStream bool
@@ -32,7 +33,14 @@ func BodyContextMiddleware(maxBodyBytes int64, next http.Handler) http.Handler {
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Body == nil {
-			http.Error(w, "Request body is required", http.StatusBadRequest)
+			response.WriteOpenAIError(
+				w,
+				http.StatusBadRequest,
+				"Request body is required.",
+				"invalid_request_error",
+				nil,
+				response.Ptr("missing_request_body"),
+			)
 			return
 		}
 
@@ -43,15 +51,25 @@ func BodyContextMiddleware(maxBodyBytes int64, next http.Handler) http.Handler {
 		if err != nil {
 			var maxErr *http.MaxBytesError
 			if errors.As(err, &maxErr) {
-				http.Error(
+				response.WriteOpenAIError(
 					w,
-					fmt.Sprintf("Request body too large. Max allowed size is %d bytes.", maxBodyBytes),
 					http.StatusRequestEntityTooLarge,
+					fmt.Sprintf("Request body too large. Max allowed size is %d bytes.", maxBodyBytes),
+					"invalid_request_error",
+					nil,
+					response.Ptr("request_body_too_large"),
 				)
 				return
 			}
 
-			http.Error(w, "Failed to read request body", http.StatusBadRequest)
+			response.WriteOpenAIError(
+				w,
+				http.StatusBadRequest,
+				"Failed to read request body.",
+				"invalid_request_error",
+				nil,
+				response.Ptr("request_body_read_failed"),
+			)
 			return
 		}
 
@@ -60,7 +78,6 @@ func BodyContextMiddleware(maxBodyBytes int64, next http.Handler) http.Handler {
 			IsStream: isStreamRequestBody(bodyBytes),
 		}
 
-		// 仍然把 body 塞回去，确保下游代理层还能继续使用
 		r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 		r.ContentLength = int64(len(bodyBytes))
 
