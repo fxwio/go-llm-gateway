@@ -4,7 +4,8 @@ server:
   write_timeout: 300s
 
 redis:
-  addr: "redis:6379"
+  # addr: "redis:6379"
+  addr: "localhost:6379"
   password: ""
   db: 0
 
