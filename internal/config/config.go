@@ -12,6 +12,7 @@ import (
 
 type Config struct {
 	Server    ServerConfig     `mapstructure:"server"`
+	Metrics   MetricsConfig    `mapstructure:"metrics"`
 	Redis     RedisConfig      `mapstructure:"redis"`
 	Auth      AuthConfig       `mapstructure:"auth"`
 	Providers []ProviderConfig `mapstructure:"providers"`
@@ -34,6 +35,16 @@ type ServerConfig struct {
 	ReadTimeout       string   `mapstructure:"read_timeout"`
 	WriteTimeout      string   `mapstructure:"write_timeout"`
 	TrustedProxyCIDRs []string `mapstructure:"trusted_proxy_cidrs"`
+}
+
+type MetricsConfig struct {
+	Path              string   `mapstructure:"path"`
+	BearerTokenEnv    string   `mapstructure:"bearer_token_env"`
+	BearerToken       string   `mapstructure:"bearer_token"`
+	AllowedCIDRs      []string `mapstructure:"allowed_cidrs"`
+	RateLimitRPS      float64  `mapstructure:"rate_limit_rps"`
+	RateLimitBurst    int      `mapstructure:"rate_limit_burst"`
+	EnableOpenMetrics bool     `mapstructure:"enable_openmetrics"`
 }
 
 type ProviderConfig struct {
@@ -63,6 +74,10 @@ func LoadConfig(path string) {
 
 	if err := resolveProviderAPIKeys(cfg); err != nil {
 		log.Fatalf("failed to resolve provider api keys: %v", err)
+	}
+
+	if err := resolveMetricsConfig(cfg); err != nil {
+		log.Fatalf("failed to resolve metrics config: %v", err)
 	}
 
 	if err := validateConfig(cfg); err != nil {
@@ -104,6 +119,33 @@ func resolveProviderAPIKeys(cfg *Config) error {
 	return nil
 }
 
+func resolveMetricsConfig(cfg *Config) error {
+	if strings.TrimSpace(cfg.Metrics.Path) == "" {
+		cfg.Metrics.Path = "/metrics"
+	}
+
+	if strings.TrimSpace(cfg.Metrics.BearerToken) != "" {
+		return fmt.Errorf("metrics.bearer_token must not be set in config file; use metrics.bearer_token_env instead")
+	}
+
+	envName := strings.TrimSpace(cfg.Metrics.BearerTokenEnv)
+	if envName != "" {
+		envValue, ok := os.LookupEnv(envName)
+		if ok && strings.TrimSpace(envValue) != "" {
+			cfg.Metrics.BearerToken = strings.TrimSpace(envValue)
+		}
+	}
+
+	if cfg.Metrics.RateLimitRPS <= 0 {
+		cfg.Metrics.RateLimitRPS = 5
+	}
+	if cfg.Metrics.RateLimitBurst <= 0 {
+		cfg.Metrics.RateLimitBurst = 10
+	}
+
+	return nil
+}
+
 func validateConfig(cfg *Config) error {
 	if cfg == nil {
 		return fmt.Errorf("config is nil")
@@ -121,6 +163,20 @@ func validateConfig(cfg *Config) error {
 		if _, _, err := net.ParseCIDR(cidr); err != nil {
 			return fmt.Errorf("invalid trusted proxy cidr %q: %w", cidr, err)
 		}
+	}
+
+	for _, cidr := range cfg.Metrics.AllowedCIDRs {
+		cidr = strings.TrimSpace(cidr)
+		if cidr == "" {
+			continue
+		}
+		if _, _, err := net.ParseCIDR(cidr); err != nil {
+			return fmt.Errorf("invalid metrics allowed cidr %q: %w", cidr, err)
+		}
+	}
+
+	if !strings.HasPrefix(cfg.Metrics.Path, "/") {
+		return fmt.Errorf("metrics.path must start with /")
 	}
 
 	seenProviders := make(map[string]struct{}, len(cfg.Providers))

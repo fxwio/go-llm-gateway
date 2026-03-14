@@ -3,15 +3,17 @@ package router
 import (
 	"net/http"
 
+	"github.com/fxwio/go-llm-gateway/internal/config"
 	"github.com/fxwio/go-llm-gateway/internal/middleware"
 	"github.com/fxwio/go-llm-gateway/internal/proxy"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func NewRouter() *http.ServeMux {
 	mux := http.NewServeMux()
 
-	// request meta -> access log -> auth -> rate limit -> body -> model router -> metrics -> cache -> proxy
+	// 业务主链路
 	coreEngine := proxy.NewGatewayProxy()
 	cachedHandler := middleware.CacheMiddleware(coreEngine)
 	metricsHandler := middleware.MetricsMiddleware(cachedHandler)
@@ -23,7 +25,21 @@ func NewRouter() *http.ServeMux {
 	finalChatHandler := middleware.RequestMetaMiddleware(accessLogHandler)
 
 	mux.Handle("POST /v1/chat/completions", finalChatHandler)
-	mux.Handle("/metrics", promhttp.Handler())
+
+	// /metrics 自监控 + 保护
+	metricsBaseHandler := promhttp.HandlerFor(
+		prometheus.DefaultGatherer,
+		promhttp.HandlerOpts{
+			EnableOpenMetrics: config.GlobalConfig.Metrics.EnableOpenMetrics,
+		},
+	)
+	metricsInstrumentedHandler := promhttp.InstrumentMetricHandler(
+		prometheus.DefaultRegisterer,
+		metricsBaseHandler,
+	)
+	protectedMetricsHandler := middleware.MetricsEndpointMiddleware(metricsInstrumentedHandler)
+
+	mux.Handle(config.GlobalConfig.Metrics.Path, protectedMetricsHandler)
 
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
