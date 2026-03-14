@@ -20,7 +20,16 @@ var (
 	trustedProxyOnce sync.Once
 	trustedProxyNets []*net.IPNet
 	trustedProxyErr  error
+
+	localFallbackLimiter = newKeyedLocalLimiter()
 )
+
+func resetRateLimitRuntimeForTest() {
+	trustedProxyOnce = sync.Once{}
+	trustedProxyNets = nil
+	trustedProxyErr = nil
+	localFallbackLimiter = newKeyedLocalLimiter()
+}
 
 func loadTrustedProxyCIDRs() ([]*net.IPNet, error) {
 	trustedProxyOnce.Do(func() {
@@ -125,41 +134,60 @@ func RateLimitMiddleware(next http.Handler) http.Handler {
 
 		scope, limitKey := buildRateLimitIdentity(r)
 
-		limit := redis_rate.Limit{
-			Rate:   qps,
-			Burst:  burst,
-			Period: time.Second,
-		}
+		mode := "local"
+		allowed := true
+		remaining := -1
+		resetAfter := ""
+		retryAfter := ""
 
-		res, err := cache.RateLimiter.Allow(r.Context(), limitKey, limit)
-		if err != nil {
-			response.WriteOpenAIError(
-				w,
-				http.StatusInternalServerError,
-				"Rate limiter unavailable.",
-				"server_error",
-				nil,
-				response.Ptr("rate_limiter_unavailable"),
-			)
-			return
+		if cache.RedisRateLimiterAvailable() {
+			limit := redis_rate.Limit{
+				Rate:   qps,
+				Burst:  burst,
+				Period: time.Second,
+			}
+
+			res, err := cache.RateLimiter.Allow(r.Context(), limitKey, limit)
+			if err == nil {
+				cache.ReportRedisSuccess()
+				mode = "redis"
+				allowed = res.Allowed > 0
+				remaining = res.Remaining
+
+				if res.ResetAfter > 0 {
+					resetAfter = res.ResetAfter.String()
+				}
+				if res.RetryAfter > 0 {
+					retryAfter = fmt.Sprintf("%d", int(res.RetryAfter.Seconds()))
+				}
+			} else {
+				cache.ReportRedisFailure(err)
+				allowed = localFallbackLimiter.Allow(limitKey, float64(qps), burst)
+			}
+		} else {
+			allowed = localFallbackLimiter.Allow(limitKey, float64(qps), burst)
 		}
 
 		w.Header().Set("X-RateLimit-Limit", strconv.Itoa(qps))
 		w.Header().Set("X-RateLimit-Burst", strconv.Itoa(burst))
-		w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(res.Remaining))
 		w.Header().Set("X-RateLimit-Scope", scope)
+		w.Header().Set("X-RateLimit-Mode", mode)
 
 		if scope == "ip" {
 			w.Header().Set("X-RateLimit-Client-IP", extractClientIP(r))
 		}
-
-		if res.ResetAfter > 0 {
-			w.Header().Set("X-RateLimit-Reset-After", res.ResetAfter.String())
+		if remaining >= 0 {
+			w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(remaining))
+		}
+		if resetAfter != "" {
+			w.Header().Set("X-RateLimit-Reset-After", resetAfter)
 		}
 
-		if res.Allowed == 0 {
-			if res.RetryAfter > 0 {
-				w.Header().Set("Retry-After", fmt.Sprintf("%d", int(res.RetryAfter.Seconds())))
+		if !allowed {
+			if retryAfter != "" {
+				w.Header().Set("Retry-After", retryAfter)
+			} else {
+				w.Header().Set("Retry-After", "1")
 			}
 
 			response.WriteOpenAIError(

@@ -44,10 +44,8 @@ func (rw *responseRecorder) WriteHeader(code int) {
 func (rw *responseRecorder) Write(b []byte) (int, error) {
 	if !rw.isStream {
 		rw.body.Write(b)
-	} else {
-		if bytes.Contains(b, []byte(`"usage":`)) {
-			rw.extractUsageFromChunk(b)
-		}
+	} else if bytes.Contains(b, []byte(`"usage":`)) {
+		rw.extractUsageFromChunk(b)
 	}
 
 	return rw.ResponseWriter.Write(b)
@@ -126,20 +124,24 @@ func CacheMiddleware(next http.Handler) http.Handler {
 			zap.String("trace_id", traceID),
 		}
 
+		var cacheKey string
+
 		if isStream {
 			w.Header().Set("X-Cache", "BYPASS")
 			gatewaymetrics.CacheRequestsTotal.WithLabelValues(providerLabel, modelLabel, "bypass").Inc()
-		}
+		} else if !cache.RedisAvailable() {
+			w.Header().Set("X-Cache", "BYPASS")
+			gatewaymetrics.CacheRequestsTotal.WithLabelValues(providerLabel, modelLabel, "bypass").Inc()
 
-		var cacheKey string
-
-		if !isStream {
+			logger.Log.Warn("Redis unavailable, cache bypassed", logFields...)
+		} else {
 			hash := sha256.Sum256(bodyBytes)
 			cacheKey = "llm_cache:" + hex.EncodeToString(hash[:])
 
 			ctx := context.Background()
 			cachedResp, err := cache.RedisClient.Get(ctx, cacheKey).Result()
 			if err == nil && cachedResp != "" {
+				cache.ReportRedisSuccess()
 				gatewaymetrics.CacheRequestsTotal.WithLabelValues(providerLabel, modelLabel, "hit").Inc()
 
 				logger.Log.Info("Cache Hit", append([]zap.Field{
@@ -171,16 +173,18 @@ func CacheMiddleware(next http.Handler) http.Handler {
 			gatewaymetrics.CacheRequestsTotal.WithLabelValues(providerLabel, modelLabel, "miss").Inc()
 
 			if err != nil && err != redis.Nil {
-				logger.Log.Warn("Redis get error", append([]zap.Field{
+				cache.ReportRedisFailure(err)
+				logger.Log.Warn("Redis get error, cache bypassing request", append([]zap.Field{
 					zap.Error(err),
 				}, logFields...)...)
+				w.Header().Set("X-Cache", "BYPASS")
+			} else {
+				cache.ReportRedisSuccess()
+				logger.Log.Info("Cache Miss, forwarding request...", append([]zap.Field{
+					zap.String("key", cacheKey),
+				}, logFields...)...)
+				w.Header().Set("X-Cache", "MISS")
 			}
-
-			logger.Log.Info("Cache Miss, forwarding request...", append([]zap.Field{
-				zap.String("key", cacheKey),
-			}, logFields...)...)
-
-			w.Header().Set("X-Cache", "MISS")
 		}
 
 		recorder := &responseRecorder{
@@ -219,16 +223,21 @@ func CacheMiddleware(next http.Handler) http.Handler {
 		if recorder.statusCode == http.StatusOK {
 			respBytes := append([]byte(nil), recorder.body.Bytes()...)
 
-			go func(cacheKey string, payload []byte, requestID string, traceID string) {
-				err := cache.RedisClient.Set(context.Background(), cacheKey, payload, 24*time.Hour).Err()
-				if err != nil {
-					logger.Log.Error("Failed to save cache",
-						zap.Error(err),
-						zap.String("request_id", requestID),
-						zap.String("trace_id", traceID),
-					)
-				}
-			}(cacheKey, respBytes, requestID, traceID)
+			if cacheKey != "" && cache.RedisAvailable() {
+				go func(cacheKey string, payload []byte, requestID string, traceID string) {
+					err := cache.RedisClient.Set(context.Background(), cacheKey, payload, 24*time.Hour).Err()
+					if err != nil {
+						cache.ReportRedisFailure(err)
+						logger.Log.Error("Failed to save cache",
+							zap.Error(err),
+							zap.String("request_id", requestID),
+							zap.String("trace_id", traceID),
+						)
+						return
+					}
+					cache.ReportRedisSuccess()
+				}(cacheKey, respBytes, requestID, traceID)
+			}
 
 			go func(payload []byte, gatewayCtx *model.GatewayContext, clientIP string, requestID string, traceID string, tokenFingerprint string) {
 				if gatewayCtx == nil {

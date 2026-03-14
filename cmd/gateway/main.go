@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -14,6 +14,7 @@ import (
 	"github.com/fxwio/go-llm-gateway/internal/router"
 	"github.com/fxwio/go-llm-gateway/pkg/cache"
 	"github.com/fxwio/go-llm-gateway/pkg/logger"
+	"go.uber.org/zap"
 )
 
 func main() {
@@ -23,14 +24,13 @@ func main() {
 	defer logger.Sync()
 
 	audit.InitAuditor()
-
 	cache.InitRedis()
 
-	// 1. Init router & main engine
 	r := router.NewRouter()
 
 	readTimeout, _ := time.ParseDuration(config.GlobalConfig.Server.ReadTimeout)
 	writeTimeout, _ := time.ParseDuration(config.GlobalConfig.Server.WriteTimeout)
+
 	if readTimeout == 0 {
 		readTimeout = 300 * time.Second
 	}
@@ -38,36 +38,39 @@ func main() {
 		writeTimeout = 300 * time.Second
 	}
 
+	port := config.GlobalConfig.Server.Port
+	if port == 0 {
+		port = 8080
+	}
+	addr := fmt.Sprintf(":%d", port)
+
 	srv := &http.Server{
-		Addr:    ":8080",
-		Handler: r,
-		// defend Slowloris
+		Addr:         addr,
+		Handler:      r,
 		ReadTimeout:  readTimeout,
 		WriteTimeout: writeTimeout,
 		IdleTimeout:  120 * time.Second,
 	}
 
-	// 2. start server
 	go func() {
-		log.Println("Starting Go-LLM-Gateway on :8080...")
+		logger.Log.Info("Starting Go-LLM-Gateway", zap.String("addr", addr))
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Listen: %s\n", err)
+			logger.Log.Fatal("ListenAndServe failed", zap.Error(err))
 		}
 	}()
 
-	// 3. Wait for the interrupt signal to shut down the server gracefully.
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
-	log.Println("Shutting down server gracefully...")
 
-	// 4. Create a Context with a 5-second timeout and wait for existing connections to finish processing.
+	logger.Log.Info("Shutting down server gracefully...")
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+
 	if err := srv.Shutdown(ctx); err != nil {
-		log.Fatal("Server forced to shutdown:", err)
+		logger.Log.Fatal("Server forced to shutdown", zap.Error(err))
 	}
 
-	log.Println("Server exiting")
-
+	logger.Log.Info("Server exited")
 }
