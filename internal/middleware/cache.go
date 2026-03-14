@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/fxwio/go-llm-gateway/internal/audit"
+	gatewaymetrics "github.com/fxwio/go-llm-gateway/internal/metrics"
 	"github.com/fxwio/go-llm-gateway/internal/model"
 	"github.com/fxwio/go-llm-gateway/internal/response"
 	"github.com/fxwio/go-llm-gateway/pkg/cache"
@@ -100,6 +101,17 @@ func CacheMiddleware(next http.Handler) http.Handler {
 			}
 		}
 
+		providerLabel := "unknown"
+		modelLabel := "unknown"
+		if gCtx != nil {
+			if gCtx.TargetProvider != "" {
+				providerLabel = gCtx.TargetProvider
+			}
+			if gCtx.TargetModel != "" {
+				modelLabel = gCtx.TargetModel
+			}
+		}
+
 		clientIP := extractClientIP(r)
 		tokenFingerprint := redact.TokenFingerprint(r.Header.Get("Authorization"))
 
@@ -114,6 +126,11 @@ func CacheMiddleware(next http.Handler) http.Handler {
 			zap.String("trace_id", traceID),
 		}
 
+		if isStream {
+			w.Header().Set("X-Cache", "BYPASS")
+			gatewaymetrics.CacheRequestsTotal.WithLabelValues(providerLabel, modelLabel, "bypass").Inc()
+		}
+
 		var cacheKey string
 
 		if !isStream {
@@ -123,6 +140,8 @@ func CacheMiddleware(next http.Handler) http.Handler {
 			ctx := context.Background()
 			cachedResp, err := cache.RedisClient.Get(ctx, cacheKey).Result()
 			if err == nil && cachedResp != "" {
+				gatewaymetrics.CacheRequestsTotal.WithLabelValues(providerLabel, modelLabel, "hit").Inc()
+
 				logger.Log.Info("Cache Hit", append([]zap.Field{
 					zap.String("key", cacheKey),
 				}, logFields...)...)
@@ -149,6 +168,8 @@ func CacheMiddleware(next http.Handler) http.Handler {
 				return
 			}
 
+			gatewaymetrics.CacheRequestsTotal.WithLabelValues(providerLabel, modelLabel, "miss").Inc()
+
 			if err != nil && err != redis.Nil {
 				logger.Log.Warn("Redis get error", append([]zap.Field{
 					zap.Error(err),
@@ -158,6 +179,8 @@ func CacheMiddleware(next http.Handler) http.Handler {
 			logger.Log.Info("Cache Miss, forwarding request...", append([]zap.Field{
 				zap.String("key", cacheKey),
 			}, logFields...)...)
+
+			w.Header().Set("X-Cache", "MISS")
 		}
 
 		recorder := &responseRecorder{
@@ -170,10 +193,6 @@ func CacheMiddleware(next http.Handler) http.Handler {
 			requestID:        requestID,
 			traceID:          traceID,
 			tokenFingerprint: tokenFingerprint,
-		}
-
-		if !isStream {
-			w.Header().Set("X-Cache", "MISS")
 		}
 
 		next.ServeHTTP(recorder, r)
