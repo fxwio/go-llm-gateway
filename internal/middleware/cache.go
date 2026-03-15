@@ -493,7 +493,10 @@ func writeRecordedResponse(w http.ResponseWriter, resp *recordedResponse, cacheH
 
 	w.WriteHeader(statusCode)
 	if len(resp.Body) > 0 {
-		_, _ = w.Write(resp.Body)
+		// #nosec G705 -- cached upstream payload is replayed verbatim for proxy semantics; upstream content type headers are restored before writing.
+		if _, err := w.Write(resp.Body); err != nil {
+			logger.Log.Warn("Failed to write cached response body", zap.Error(err))
+		}
 	}
 }
 

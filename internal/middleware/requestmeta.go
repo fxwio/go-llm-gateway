@@ -158,7 +158,8 @@ func generateHex(nBytes int) string {
 	// 极端情况下的兜底，避免生成空值
 	seed := uint64(time.Now().UnixNano()) + atomic.AddUint64(&requestIDFallbackCounter, 1)
 	for i := range buf {
-		buf[i] = byte(seed >> ((i % 8) * 8))
+		shift := uint((i % 8) * 8)
+		buf[i] = byte((seed >> shift) & 0xff)
 	}
 	return hex.EncodeToString(buf)
 }

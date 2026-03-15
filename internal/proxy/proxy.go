@@ -125,6 +125,7 @@ func (h *gatewayProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 				return
 			}
 
+			// #nosec G704 -- upstreamReq is constrained to provider base URLs validated from gateway config; client input does not control the destination host.
 			resp, err := h.client.Do(upstreamReq)
 			markPassiveProbeResult(provider.Name, provider.BaseURL, resp, err)
 			observeUpstreamAttempt(provider.Name, gatewayCtx.TargetModel, resp, err, time.Since(attemptStart), "attempt")
@@ -222,6 +223,7 @@ func buildUpstreamRequest(orig *http.Request, upstreamBody []byte, gatewayCtx *m
 	requestURL.Path = joinURLPath(targetURL.Path, orig.URL.Path)
 	requestURL.RawPath = requestURL.Path
 
+	// #nosec G704 -- requestURL is built from a validated provider base URL; only the fixed gateway route path is forwarded.
 	req, err := http.NewRequestWithContext(orig.Context(), orig.Method, requestURL.String(), bytes.NewReader(upstreamBody))
 	if err != nil {
 		return nil, err
