@@ -1,9 +1,12 @@
 package middleware
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/fxwio/go-llm-gateway/internal/config"
 )
 
 func TestRemoteIP_StripsPort(t *testing.T) {
@@ -66,27 +69,58 @@ func TestExtractClientIPFromTrustedProxy_FallsBackToXRealIPWhenXFFInvalid(t *tes
 	}
 }
 
-func TestCIDRCache_Reset(t *testing.T) {
-	cache := &cidrCache{}
+func TestTrimIPv6Brackets(t *testing.T) {
+	got := trimIPv6Brackets("[2001:db8::1]")
+	if got != "2001:db8::1" {
+		t.Fatalf("expected trimmed ipv6, got %s", got)
+	}
+}
 
-	nets, err := cache.Load([]string{"127.0.0.1/32"}, "test")
+func TestNormalizeIPCandidate_HostPort(t *testing.T) {
+	got := normalizeIPCandidate("198.51.100.10:443")
+	if got != "198.51.100.10" {
+		t.Fatalf("expected normalized ip 198.51.100.10, got %s", got)
+	}
+}
+
+func TestParseCIDRs_Invalid(t *testing.T) {
+	_, err := parseCIDRs([]string{"not-a-cidr"}, "test")
+	if err == nil {
+		t.Fatal("expected parse error for invalid cidr")
+	}
+}
+
+func TestMetricsIPAllowed_UsesDirectRemoteIPOnly(t *testing.T) {
+	resetMetricsEndpointRuntimeForTest()
+
+	config.GlobalConfig = &config.Config{
+		Metrics: config.MetricsConfig{
+			AllowedCIDRs:   []string{"127.0.0.1/32"},
+			RateLimitRPS:   100,
+			RateLimitBurst: 100,
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req.RemoteAddr = "198.51.100.10:12345"
+	req.Header.Set("X-Forwarded-For", "127.0.0.1")
+
+	if isMetricsIPAllowed(req) {
+		t.Fatal("expected metrics ip check to ignore forwarded headers and use direct remote ip")
+	}
+}
+
+func TestIPInCIDRs(t *testing.T) {
+	_, ipNet, err := net.ParseCIDR("10.0.0.0/8")
 	if err != nil {
-		t.Fatalf("unexpected load error: %v", err)
-	}
-	if len(nets) != 1 {
-		t.Fatalf("expected 1 cidr, got %d", len(nets))
+		t.Fatalf("parse cidr: %v", err)
 	}
 
-	cache.Reset()
+	if !ipInCIDRs("10.1.2.3", []*net.IPNet{ipNet}) {
+		t.Fatal("expected ip to be in cidr")
+	}
 
-	nets, err = cache.Load([]string{"10.0.0.0/8"}, "test")
-	if err != nil {
-		t.Fatalf("unexpected load error after reset: %v", err)
-	}
-	if len(nets) != 1 {
-		t.Fatalf("expected 1 cidr after reset, got %d", len(nets))
-	}
-	if !nets[0].Contains([]byte{10, 1, 2, 3}) {
-		t.Fatal("expected reset cache to reload new cidr")
+	if ipInCIDRs("192.168.1.1", []*net.IPNet{ipNet}) {
+		t.Fatal("expected ip to be outside cidr")
 	}
 }

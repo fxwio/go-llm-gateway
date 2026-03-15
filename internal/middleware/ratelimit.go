@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fxwio/go-llm-gateway/internal/config"
@@ -15,20 +16,29 @@ import (
 )
 
 var (
-	trustedProxyCIDRCache = &cidrCache{}
-	localFallbackLimiter  = newKeyedLocalLimiter()
+	trustedProxyOnce sync.Once
+	trustedProxyNets []*net.IPNet
+	trustedProxyErr  error
+
+	localFallbackLimiter = newKeyedLocalLimiter()
 )
 
 func resetRateLimitRuntimeForTest() {
-	trustedProxyCIDRCache.Reset()
+	trustedProxyOnce = sync.Once{}
+	trustedProxyNets = nil
+	trustedProxyErr = nil
 	localFallbackLimiter = newKeyedLocalLimiter()
 }
 
 func loadTrustedProxyCIDRs() ([]*net.IPNet, error) {
-	return trustedProxyCIDRCache.Load(
-		config.GlobalConfig.Server.TrustedProxyCIDRs,
-		"trusted proxy",
-	)
+	trustedProxyOnce.Do(func() {
+		trustedProxyNets, trustedProxyErr = parseCIDRs(
+			config.GlobalConfig.Server.TrustedProxyCIDRs,
+			"trusted proxy",
+		)
+	})
+
+	return trustedProxyNets, trustedProxyErr
 }
 
 func extractClientIP(r *http.Request) string {
@@ -36,6 +46,7 @@ func extractClientIP(r *http.Request) string {
 	if err != nil {
 		return remoteIP(r)
 	}
+
 	return extractClientIPFromTrustedProxy(r, trustedCIDRs)
 }
 

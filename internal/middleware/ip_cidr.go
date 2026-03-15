@@ -5,28 +5,10 @@ import (
 	"net"
 	"net/http"
 	"strings"
-	"sync"
 )
 
-type cidrCache struct {
-	once sync.Once
-	nets []*net.IPNet
-	err  error
-}
-
-func (c *cidrCache) Load(cidrs []string, fieldName string) ([]*net.IPNet, error) {
-	c.once.Do(func() {
-		c.nets, c.err = parseCIDRs(cidrs, fieldName)
-	})
-	return c.nets, c.err
-}
-
-func (c *cidrCache) Reset() {
-	c.once = sync.Once{}
-	c.nets = nil
-	c.err = nil
-}
-
+// parseCIDRs 负责把配置里的 CIDR 字符串解析为 []*net.IPNet。
+// 配置层虽然已经做过一次校验，但运行时这里仍然保留兜底，避免被不一致状态拖垮。
 func parseCIDRs(cidrs []string, fieldName string) ([]*net.IPNet, error) {
 	nets := make([]*net.IPNet, 0, len(cidrs))
 	for _, cidr := range cidrs {
@@ -41,9 +23,12 @@ func parseCIDRs(cidrs []string, fieldName string) ([]*net.IPNet, error) {
 		}
 		nets = append(nets, ipNet)
 	}
+
 	return nets, nil
 }
 
+// remoteIP 只从 RemoteAddr 取直接来源 IP，不读取任何转发头。
+// 这是 /metrics 授权判断应当使用的语义。
 func remoteIP(r *http.Request) string {
 	if r == nil {
 		return ""
@@ -73,26 +58,31 @@ func ipInCIDRs(ipStr string, nets []*net.IPNet) bool {
 			return true
 		}
 	}
+
 	return false
 }
 
+// extractClientIPFromTrustedProxy 只有在直连来源 IP 属于 trusted proxy 网段时，
+// 才会信任 X-Forwarded-For / X-Real-IP。
 func extractClientIPFromTrustedProxy(r *http.Request, trustedProxyCIDRs []*net.IPNet) string {
 	remote := remoteIP(r)
 	if !ipInCIDRs(remote, trustedProxyCIDRs) {
 		return remote
 	}
 
-	if xff := firstValidForwardedIP(r.Header.Get("X-Forwarded-For")); xff != "" {
-		return xff
+	if ip := firstValidForwardedIP(r.Header.Get("X-Forwarded-For")); ip != "" {
+		return ip
 	}
 
-	if xrip := normalizeIPCandidate(r.Header.Get("X-Real-IP")); xrip != "" {
-		return xrip
+	if ip := normalizeIPCandidate(r.Header.Get("X-Real-IP")); ip != "" {
+		return ip
 	}
 
 	return remote
 }
 
+// X-Forwarded-For 通常是 client, proxy1, proxy2...
+// 这里取第一个合法 IP，既兼容标准链路，也能避免把 "unknown" 之类脏值当成 client IP。
 func firstValidForwardedIP(xff string) string {
 	if strings.TrimSpace(xff) == "" {
 		return ""
@@ -104,6 +94,7 @@ func firstValidForwardedIP(xff string) string {
 			return ip
 		}
 	}
+
 	return ""
 }
 
@@ -113,17 +104,28 @@ func normalizeIPCandidate(candidate string) string {
 		return ""
 	}
 
-	if ip := net.ParseIP(candidate); ip != nil {
+	// 先尝试直接解析纯 IP
+	if ip := net.ParseIP(trimIPv6Brackets(candidate)); ip != nil {
 		return ip.String()
 	}
 
+	// 再尝试解析 host:port
 	host, _, err := net.SplitHostPort(candidate)
-	if err == nil {
-		host = strings.TrimSpace(host)
-		if ip := net.ParseIP(host); ip != nil {
-			return ip.String()
-		}
+	if err != nil {
+		return ""
+	}
+
+	host = strings.TrimSpace(trimIPv6Brackets(host))
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.String()
 	}
 
 	return ""
+}
+
+func trimIPv6Brackets(s string) string {
+	if len(s) >= 2 && strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]") {
+		return s[1 : len(s)-1]
+	}
+	return s
 }

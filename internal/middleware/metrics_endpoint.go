@@ -10,14 +10,18 @@ import (
 )
 
 var (
-	metricsAllowedCIDRCache = &cidrCache{}
+	metricsCIDROnce sync.Once
+	metricsCIDRs    []*net.IPNet
+	metricsCIDRErr  error
 
 	metricsLimiterOnce sync.Once
 	metricsLimiter     *localTokenBucket
 )
 
 func resetMetricsEndpointRuntimeForTest() {
-	metricsAllowedCIDRCache.Reset()
+	metricsCIDROnce = sync.Once{}
+	metricsCIDRs = nil
+	metricsCIDRErr = nil
 	metricsLimiterOnce = sync.Once{}
 	metricsLimiter = nil
 }
@@ -30,14 +34,19 @@ func getMetricsLimiter() *localTokenBucket {
 			metricsLimiter = newLocalTokenBucket(rps, burst)
 		}
 	})
+
 	return metricsLimiter
 }
 
 func loadMetricsAllowedCIDRs() ([]*net.IPNet, error) {
-	return metricsAllowedCIDRCache.Load(
-		config.GlobalConfig.Metrics.AllowedCIDRs,
-		"metrics allowed",
-	)
+	metricsCIDROnce.Do(func() {
+		metricsCIDRs, metricsCIDRErr = parseCIDRs(
+			config.GlobalConfig.Metrics.AllowedCIDRs,
+			"metrics allowed",
+		)
+	})
+
+	return metricsCIDRs, metricsCIDRErr
 }
 
 func isMetricsIPAllowed(r *http.Request) bool {
@@ -46,6 +55,7 @@ func isMetricsIPAllowed(r *http.Request) bool {
 		return false
 	}
 
+	// /metrics 保护继续只看直连来源 IP，不信任 XFF / X-Real-IP。
 	return ipInCIDRs(remoteIP(r), allowedCIDRs)
 }
 
