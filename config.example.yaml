@@ -32,9 +32,32 @@ redis:
   db: 0
 
 auth:
-  valid_tokens_env: "GATEWAY_VALID_TOKENS"
+  valid_tokens_env: GATEWAY_VALID_TOKENS
   rate_limit_qps: 10
   rate_limit_burst: 20
+
+  admin:
+    bearer_token_env: GATEWAY_ADMIN_TOKEN
+    allowed_cidrs:
+      - 127.0.0.1/32
+      - 10.0.0.0/8
+
+  tokens:
+    - name: team-a-web
+      tenant: team-a
+      app: web
+      value_env: TEAM_A_WEB_TOKEN
+      rate_limit_qps: 20
+      rate_limit_burst: 40
+      daily_token_limit: 500000
+
+    - name: team-b-batch
+      tenant: team-b
+      app: batch
+      value_env: TEAM_B_BATCH_TOKEN
+      rate_limit_qps: 5
+      rate_limit_burst: 10
+      daily_token_limit: 2000000
 
 cache:
   enabled: true
