@@ -10,17 +10,14 @@ import (
 )
 
 var (
-	metricsCIDROnce sync.Once
-	metricsCIDRs    []*net.IPNet
+	metricsAllowedCIDRCache = &cidrCache{}
 
 	metricsLimiterOnce sync.Once
 	metricsLimiter     *localTokenBucket
 )
 
 func resetMetricsEndpointRuntimeForTest() {
-	metricsCIDROnce = sync.Once{}
-	metricsCIDRs = nil
-
+	metricsAllowedCIDRCache.Reset()
 	metricsLimiterOnce = sync.Once{}
 	metricsLimiter = nil
 }
@@ -36,39 +33,20 @@ func getMetricsLimiter() *localTokenBucket {
 	return metricsLimiter
 }
 
-func loadMetricsAllowedCIDRs() []*net.IPNet {
-	metricsCIDROnce.Do(func() {
-		cidrs := config.GlobalConfig.Metrics.AllowedCIDRs
-		nets := make([]*net.IPNet, 0, len(cidrs))
-		for _, cidr := range cidrs {
-			cidr = strings.TrimSpace(cidr)
-			if cidr == "" {
-				continue
-			}
-			_, ipNet, err := net.ParseCIDR(cidr)
-			if err == nil {
-				nets = append(nets, ipNet)
-			}
-		}
-		metricsCIDRs = nets
-	})
-
-	return metricsCIDRs
+func loadMetricsAllowedCIDRs() ([]*net.IPNet, error) {
+	return metricsAllowedCIDRCache.Load(
+		config.GlobalConfig.Metrics.AllowedCIDRs,
+		"metrics allowed",
+	)
 }
 
 func isMetricsIPAllowed(r *http.Request) bool {
-	ipStr := remoteIP(r)
-	ip := net.ParseIP(strings.TrimSpace(ipStr))
-	if ip == nil {
+	allowedCIDRs, err := loadMetricsAllowedCIDRs()
+	if err != nil {
 		return false
 	}
 
-	for _, ipNet := range loadMetricsAllowedCIDRs() {
-		if ipNet.Contains(ip) {
-			return true
-		}
-	}
-	return false
+	return ipInCIDRs(remoteIP(r), allowedCIDRs)
 }
 
 func hasValidMetricsBearerToken(r *http.Request) bool {

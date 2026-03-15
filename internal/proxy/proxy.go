@@ -1,14 +1,10 @@
 package proxy
 
 import (
-	"bytes"
-	"encoding/json"
-	"io"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -36,7 +32,6 @@ func NewGatewayProxy() http.Handler {
 				Timeout:   30 * time.Second,
 				KeepAlive: 30 * time.Second,
 			}).DialContext,
-
 			ForceAttemptHTTP2:     true,
 			MaxIdleConns:          512,
 			MaxIdleConnsPerHost:   128,
@@ -143,8 +138,8 @@ func proxyDirector(req *http.Request) {
 		}
 	}
 
-	enrichStreamOptions(req)
-
+	// 不再在 proxy 层二次读取和改写 body。
+	// stream_options.include_usage 的注入已经前移到 BodyContextMiddleware。
 	if gatewayCtx.TargetProvider == "anthropic" {
 		req.URL.Path = "/v1/messages"
 		req.URL.RawPath = req.URL.Path
@@ -199,54 +194,6 @@ func parseAndCacheBaseURL(raw string) (*url.URL, error) {
 	return parsed, nil
 }
 
-func enrichStreamOptions(req *http.Request) {
-	if req.Body == nil {
-		return
-	}
-
-	bodyBytes, err := io.ReadAll(req.Body)
-	if err != nil {
-		req.Body = io.NopCloser(bytes.NewBuffer(nil))
-		req.ContentLength = 0
-		return
-	}
-
-	req.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-	req.ContentLength = int64(len(bodyBytes))
-
-	if !isStreamRequest(bodyBytes) {
-		return
-	}
-
-	var jsonBody map[string]interface{}
-	if err := json.Unmarshal(bodyBytes, &jsonBody); err != nil {
-		return
-	}
-
-	streamOptions, ok := jsonBody["stream_options"].(map[string]interface{})
-	if !ok || streamOptions == nil {
-		streamOptions = make(map[string]interface{})
-	}
-	if _, exists := streamOptions["include_usage"]; !exists {
-		streamOptions["include_usage"] = true
-	}
-	jsonBody["stream_options"] = streamOptions
-
-	newBodyBytes, err := json.Marshal(jsonBody)
-	if err != nil {
-		return
-	}
-
-	req.Body = io.NopCloser(bytes.NewBuffer(newBodyBytes))
-	req.ContentLength = int64(len(newBodyBytes))
-	req.Header.Set("Content-Length", strconv.Itoa(len(newBodyBytes)))
-}
-
-func isStreamRequest(body []byte) bool {
-	return bytes.Contains(body, []byte(`"stream":true`)) ||
-		bytes.Contains(body, []byte(`"stream": true`))
-}
-
 func joinURLPath(basePath, reqPath string) string {
 	switch {
 	case basePath == "":
@@ -268,5 +215,6 @@ func requestMetaFields(r *http.Request) []zap.Field {
 			zap.String("trace_id", meta.TraceID),
 		}
 	}
+
 	return nil
 }

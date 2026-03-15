@@ -1,12 +1,10 @@
 package middleware
 
 import (
-	"fmt"
 	"net"
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/fxwio/go-llm-gateway/internal/config"
@@ -17,95 +15,28 @@ import (
 )
 
 var (
-	trustedProxyOnce sync.Once
-	trustedProxyNets []*net.IPNet
-	trustedProxyErr  error
-
-	localFallbackLimiter = newKeyedLocalLimiter()
+	trustedProxyCIDRCache = &cidrCache{}
+	localFallbackLimiter  = newKeyedLocalLimiter()
 )
 
 func resetRateLimitRuntimeForTest() {
-	trustedProxyOnce = sync.Once{}
-	trustedProxyNets = nil
-	trustedProxyErr = nil
+	trustedProxyCIDRCache.Reset()
 	localFallbackLimiter = newKeyedLocalLimiter()
 }
 
 func loadTrustedProxyCIDRs() ([]*net.IPNet, error) {
-	trustedProxyOnce.Do(func() {
-		cidrs := config.GlobalConfig.Server.TrustedProxyCIDRs
-		nets := make([]*net.IPNet, 0, len(cidrs))
-
-		for _, cidr := range cidrs {
-			cidr = strings.TrimSpace(cidr)
-			if cidr == "" {
-				continue
-			}
-			_, ipNet, err := net.ParseCIDR(cidr)
-			if err != nil {
-				trustedProxyErr = fmt.Errorf("invalid trusted proxy cidr %q: %w", cidr, err)
-				return
-			}
-			nets = append(nets, ipNet)
-		}
-
-		trustedProxyNets = nets
-	})
-
-	return trustedProxyNets, trustedProxyErr
-}
-
-func remoteIP(r *http.Request) string {
-	ip, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
-	if err != nil {
-		return strings.TrimSpace(r.RemoteAddr)
-	}
-	return ip
-}
-
-func isTrustedProxyIP(ipStr string) bool {
-	ip := net.ParseIP(strings.TrimSpace(ipStr))
-	if ip == nil {
-		return false
-	}
-
-	nets, err := loadTrustedProxyCIDRs()
-	if err != nil {
-		return false
-	}
-
-	for _, ipNet := range nets {
-		if ipNet.Contains(ip) {
-			return true
-		}
-	}
-	return false
+	return trustedProxyCIDRCache.Load(
+		config.GlobalConfig.Server.TrustedProxyCIDRs,
+		"trusted proxy",
+	)
 }
 
 func extractClientIP(r *http.Request) string {
-	remote := remoteIP(r)
-
-	if !isTrustedProxyIP(remote) {
-		return remote
+	trustedCIDRs, err := loadTrustedProxyCIDRs()
+	if err != nil {
+		return remoteIP(r)
 	}
-
-	xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For"))
-	if xff != "" {
-		ips := strings.Split(xff, ",")
-		for _, candidate := range ips {
-			candidate = strings.TrimSpace(candidate)
-			if candidate != "" {
-				return candidate
-			}
-		}
-	}
-
-	xrip := strings.TrimSpace(r.Header.Get("X-Real-IP"))
-	if xrip != "" {
-		return xrip
-	}
-
-	return remote
+	return extractClientIPFromTrustedProxy(r, trustedCIDRs)
 }
 
 func buildRateLimitIdentity(r *http.Request) (scope string, key string) {
@@ -158,7 +89,7 @@ func RateLimitMiddleware(next http.Handler) http.Handler {
 					resetAfter = res.ResetAfter.String()
 				}
 				if res.RetryAfter > 0 {
-					retryAfter = fmt.Sprintf("%d", int(res.RetryAfter.Seconds()))
+					retryAfter = strconv.Itoa(int(res.RetryAfter.Seconds()))
 				}
 			} else {
 				cache.ReportRedisFailure(err)
