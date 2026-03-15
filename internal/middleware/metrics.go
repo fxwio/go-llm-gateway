@@ -104,6 +104,8 @@ func normalizeCacheStatus(v string) string {
 		return "hit"
 	case "MISS":
 		return "miss"
+	case "MISS-SHARED":
+		return "shared"
 	case "BYPASS":
 		return "bypass"
 	default:

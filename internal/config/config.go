@@ -23,6 +23,7 @@ type Config struct {
 	Metrics   MetricsConfig    `mapstructure:"metrics"`
 	Redis     RedisConfig      `mapstructure:"redis"`
 	Auth      AuthConfig       `mapstructure:"auth"`
+	Cache     CacheConfig      `mapstructure:"cache"`
 	Upstream  UpstreamConfig   `mapstructure:"upstream"`
 	Providers []ProviderConfig `mapstructure:"providers"`
 }
@@ -59,6 +60,13 @@ type MetricsConfig struct {
 	RateLimitRPS      float64  `mapstructure:"rate_limit_rps"`
 	RateLimitBurst    int      `mapstructure:"rate_limit_burst"`
 	EnableOpenMetrics bool     `mapstructure:"enable_openmetrics"`
+}
+
+type CacheConfig struct {
+	Enabled         bool   `mapstructure:"enabled"`
+	TTL             string `mapstructure:"ttl"`
+	MaxPayloadBytes int    `mapstructure:"max_payload_bytes"`
+	CoalesceEnabled bool   `mapstructure:"coalesce_enabled"`
 }
 
 type UpstreamConfig struct {
@@ -104,6 +112,7 @@ func LoadConfig(path string) error {
 	viper.SetConfigType("yaml")
 	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	viper.AutomaticEnv()
+
 	setDefaults()
 
 	if err := viper.ReadInConfig(); err != nil {
@@ -124,19 +133,27 @@ func LoadConfig(path string) error {
 	if err := resolveMetricsConfig(cfg); err != nil {
 		return fmt.Errorf("resolve metrics config: %w", err)
 	}
+
 	normalizeConfig(cfg)
+	applyCacheDefaults(cfg)
 	applyUpstreamDefaults(cfg)
+
 	if err := validateConfig(cfg); err != nil {
 		return fmt.Errorf("validate config: %w", err)
 	}
 
 	GlobalConfig = cfg
+
 	log.Printf(
-		"Configuration loaded successfully. path=%s providers=%d provider_names=%s",
+		"Configuration loaded successfully. path=%s providers=%d provider_names=%s cache_enabled=%t cache_ttl=%s cache_max_payload_bytes=%d",
 		resolvedPath,
 		len(cfg.Providers),
 		strings.Join(providerNames(cfg.Providers), ","),
+		cfg.Cache.Enabled,
+		cfg.Cache.TTL,
+		cfg.Cache.MaxPayloadBytes,
 	)
+
 	return nil
 }
 
@@ -158,6 +175,11 @@ func setDefaults() {
 
 	viper.SetDefault("redis.addr", "redis:6379")
 	viper.SetDefault("redis.db", 0)
+
+	viper.SetDefault("cache.enabled", true)
+	viper.SetDefault("cache.ttl", "24h")
+	viper.SetDefault("cache.max_payload_bytes", 1<<20)
+	viper.SetDefault("cache.coalesce_enabled", true)
 
 	viper.SetDefault("upstream.retryable_status_codes", []int{429, 500, 502, 503, 504})
 	viper.SetDefault("upstream.retry_backoff", "200ms")
@@ -182,11 +204,14 @@ func normalizeConfig(cfg *Config) {
 	cfg.Metrics.Path = strings.TrimSpace(cfg.Metrics.Path)
 	cfg.Metrics.BearerTokenEnv = strings.TrimSpace(cfg.Metrics.BearerTokenEnv)
 	cfg.Metrics.BearerToken = strings.TrimSpace(cfg.Metrics.BearerToken)
+
 	cfg.Redis.Addr = strings.TrimSpace(cfg.Redis.Addr)
 	cfg.Redis.Password = strings.TrimSpace(cfg.Redis.Password)
 
 	cfg.Auth.ValidTokensEnv = strings.TrimSpace(cfg.Auth.ValidTokensEnv)
 	cfg.Auth.ValidTokens = uniqueNonEmpty(cfg.Auth.ValidTokens)
+
+	cfg.Cache.TTL = strings.TrimSpace(cfg.Cache.TTL)
 
 	for i := range cfg.Server.TrustedProxyCIDRs {
 		cfg.Server.TrustedProxyCIDRs[i] = strings.TrimSpace(cfg.Server.TrustedProxyCIDRs[i])
@@ -289,6 +314,15 @@ func resolveMetricsConfig(cfg *Config) error {
 	return nil
 }
 
+func applyCacheDefaults(cfg *Config) {
+	if strings.TrimSpace(cfg.Cache.TTL) == "" {
+		cfg.Cache.TTL = "24h"
+	}
+	if cfg.Cache.MaxPayloadBytes <= 0 {
+		cfg.Cache.MaxPayloadBytes = 1 << 20
+	}
+}
+
 func applyUpstreamDefaults(cfg *Config) {
 	if cfg.Upstream.DefaultMaxRetries < 0 {
 		cfg.Upstream.DefaultMaxRetries = 0
@@ -320,7 +354,6 @@ func applyUpstreamDefaults(cfg *Config) {
 	if cfg.Upstream.BreakerHalfOpenRequests == 0 {
 		cfg.Upstream.BreakerHalfOpenRequests = 3
 	}
-
 	for i := range cfg.Providers {
 		if cfg.Providers[i].Priority <= 0 {
 			cfg.Providers[i].Priority = 100
@@ -370,6 +403,13 @@ func validateConfig(cfg *Config) error {
 	}
 	if len(cfg.Auth.ValidTokens) == 0 {
 		return fmt.Errorf("at least one gateway token must be configured via auth.valid_tokens or auth.valid_tokens_env")
+	}
+
+	if err := validatePositiveDuration("cache.ttl", cfg.Cache.TTL); err != nil {
+		return err
+	}
+	if cfg.Cache.MaxPayloadBytes <= 0 {
+		return fmt.Errorf("cache.max_payload_bytes must be > 0")
 	}
 
 	for _, durationValue := range []struct {
@@ -460,6 +500,7 @@ func validateProviderBaseURL(providerName, raw string) error {
 	if parsed.Scheme == "" || parsed.Host == "" {
 		return fmt.Errorf("provider %q base_url must include scheme and host", providerName)
 	}
+
 	switch parsed.Scheme {
 	case "https":
 		return nil
@@ -483,11 +524,7 @@ func isPrivateOrLoopbackHost(host string) bool {
 	if ip == nil {
 		return false
 	}
-
-	if ip.IsLoopback() || ip.IsPrivate() {
-		return true
-	}
-	return false
+	return ip.IsLoopback() || ip.IsPrivate()
 }
 
 func providerNames(providers []ProviderConfig) []string {
@@ -519,6 +556,7 @@ func uniqueNonEmpty(items []string) []string {
 		seen[normalized] = struct{}{}
 		out = append(out, normalized)
 	}
+
 	return out
 }
 

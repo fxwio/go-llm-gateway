@@ -36,6 +36,12 @@ auth:
   rate_limit_qps: 10
   rate_limit_burst: 20
 
+cache:
+  enabled: true
+  ttl: 24h
+  max_payload_bytes: 1048576
+  coalesce_enabled: true
+
 providers:
   - name: "openai"
     base_url: "https://api.openai.com"
@@ -43,11 +49,13 @@ providers:
     models:
       - "gpt-4o"
       - "gpt-4.1"
+
   - name: "anthropic"
     base_url: "https://api.anthropic.com"
     api_key_env: "ANTHROPIC_API_KEY"
     models:
       - "claude-3-7-sonnet-latest"
+
   - name: "siliconflow"
     base_url: "https://api.siliconflow.cn"
     api_key_env: "SILICONFLOW_API_KEY"
