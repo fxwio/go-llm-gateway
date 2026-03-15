@@ -23,13 +23,6 @@ var (
 	localFallbackLimiter = newKeyedLocalLimiter()
 )
 
-func resetRateLimitRuntimeForTest() {
-	trustedProxyOnce = sync.Once{}
-	trustedProxyNets = nil
-	trustedProxyErr = nil
-	localFallbackLimiter = newKeyedLocalLimiter()
-}
-
 func loadTrustedProxyCIDRs() ([]*net.IPNet, error) {
 	trustedProxyOnce.Do(func() {
 		trustedProxyNets, trustedProxyErr = parseCIDRs(config.GlobalConfig.Server.TrustedProxyCIDRs, "trusted proxy")
@@ -95,7 +88,7 @@ func RateLimitMiddleware(next http.Handler) http.Handler {
 
 		scope, limitKey := buildRateLimitIdentity(r)
 		mode := "local"
-		allowed := true
+		var allowed bool
 		remaining := -1
 		resetAfter := ""
 		retryAfter := ""

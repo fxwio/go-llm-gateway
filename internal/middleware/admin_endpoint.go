@@ -17,14 +17,6 @@ var (
 	adminLimiter     *localTokenBucket
 )
 
-func resetAdminEndpointRuntimeForTest() {
-	adminCIDROnce = sync.Once{}
-	adminCIDRs = nil
-	adminCIDRErr = nil
-	adminLimiterOnce = sync.Once{}
-	adminLimiter = nil
-}
-
 func getAdminLimiter() *localTokenBucket {
 	adminLimiterOnce.Do(func() {
 		rps := config.GlobalConfig.Auth.Admin.RateLimitRPS

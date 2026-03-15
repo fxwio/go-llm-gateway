@@ -258,7 +258,11 @@ func buildUpstreamRequest(orig *http.Request, upstreamBody []byte, gatewayCtx *m
 }
 
 func writeUpstreamResponse(w http.ResponseWriter, resp *http.Response) error {
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			logger.Log.Debug("Failed to close upstream response body", zap.Error(err))
+		}
+	}()
 
 	copyResponseHeaders(w.Header(), resp.Header)
 	w.Header().Del("Server")

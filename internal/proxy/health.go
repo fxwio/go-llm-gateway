@@ -96,7 +96,15 @@ func probeProvider(client *http.Client, provider config.ProviderConfig) {
 		updateProviderHealth(provider.Name, provider.BaseURL, false, 0, err, "active")
 		return
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			logger.Log.Debug(
+				"Failed to close upstream health probe body",
+				zap.String("provider", provider.Name),
+				zap.Error(closeErr),
+			)
+		}
+	}()
 
 	healthy := resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests
 	var healthErr error

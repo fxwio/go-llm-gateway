@@ -43,10 +43,7 @@ func TranslateOpenAIToAnthropic(req *http.Request) error {
 		if msg.Role == "system" {
 			anthropicReq.System = msg.Content
 		} else {
-			anthropicReq.Messages = append(anthropicReq.Messages, model.AnthropicMessage{
-				Role:    msg.Role,
-				Content: msg.Content,
-			})
+			anthropicReq.Messages = append(anthropicReq.Messages, model.AnthropicMessage(msg))
 		}
 	}
 

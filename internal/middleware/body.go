@@ -52,7 +52,9 @@ func BodyContextMiddleware(maxBodyBytes int64, next http.Handler) http.Handler {
 		}
 
 		limitedBody := http.MaxBytesReader(w, r.Body, maxBodyBytes)
-		defer limitedBody.Close()
+		defer func() {
+			_ = limitedBody.Close()
+		}()
 
 		rawBody, err := io.ReadAll(limitedBody)
 		if err != nil {

@@ -33,7 +33,9 @@ func NewLLMProxy(target string) (*LLMProxy, error) {
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		log.Printf("Proxy error: %v", err)
 		w.WriteHeader(http.StatusBadGateway)
-		w.Write([]byte("Bad Gateway: Downstream AI provider is unreachable"))
+		if _, writeErr := w.Write([]byte("Bad Gateway: Downstream AI provider is unreachable")); writeErr != nil {
+			log.Printf("Proxy error response write failed: %v", writeErr)
+		}
 	}
 
 	return &LLMProxy{
