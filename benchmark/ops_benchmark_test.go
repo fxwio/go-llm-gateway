@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/fxwio/go-llm-gateway/internal/config"
@@ -11,18 +12,30 @@ import (
 	"github.com/fxwio/go-llm-gateway/pkg/cache"
 )
 
-func BenchmarkHealthLive(b *testing.B) {
-	if err := config.LoadConfig(filepath.Join("..", "integration", "testdata", "config.integration.yaml")); err != nil {
-		b.Fatalf("load config: %v", err)
-	}
-	cache.InitRedis()
+var (
+	benchmarkSetupOnce sync.Once
+	benchmarkRouter    http.Handler
+	benchmarkSetupErr  error
+)
 
-	h := router.NewRouter()
+func BenchmarkHealthLive(b *testing.B) {
+	benchmarkSetupOnce.Do(func() {
+		if err := config.LoadConfig(filepath.Join("..", "integration", "testdata", "config.integration.yaml")); err != nil {
+			benchmarkSetupErr = err
+			return
+		}
+		cache.InitRedis()
+		benchmarkRouter = router.NewRouter()
+	})
+	if benchmarkSetupErr != nil {
+		b.Fatalf("benchmark setup: %v", benchmarkSetupErr)
+	}
+
 	req := httptest.NewRequest(http.MethodGet, "/health/live", nil)
 
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		rr := httptest.NewRecorder()
-		h.ServeHTTP(rr, req)
+		benchmarkRouter.ServeHTTP(rr, req)
 	}
 }

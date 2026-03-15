@@ -7,7 +7,7 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
-var Log *zap.Logger
+var Log = zap.NewNop()
 
 // InitLogger 初始化全局的 Zap 日志实例
 func InitLogger() {

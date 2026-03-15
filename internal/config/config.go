@@ -362,10 +362,14 @@ func resolveAdminConfig(cfg *Config) error {
 	envName := strings.TrimSpace(cfg.Auth.Admin.BearerTokenEnv)
 	if envName != "" {
 		envValue, ok := os.LookupEnv(envName)
-		if !ok || strings.TrimSpace(envValue) == "" {
-			return fmt.Errorf("auth.admin requires environment variable %s, but it is not set", envName)
+		if ok && strings.TrimSpace(envValue) != "" {
+			cfg.Auth.Admin.BearerToken = strings.TrimSpace(envValue)
+		} else {
+			log.Printf(
+				"admin bearer token env %s is not set; admin endpoints will rely on CIDR rules or remain disabled",
+				envName,
+			)
 		}
-		cfg.Auth.Admin.BearerToken = strings.TrimSpace(envValue)
 	}
 	if cfg.Auth.Admin.RateLimitRPS <= 0 {
 		cfg.Auth.Admin.RateLimitRPS = 2
