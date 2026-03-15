@@ -30,8 +30,7 @@ func NewRouter() *http.ServeMux {
 	bodyHandler := middleware.BodyContextMiddleware(middleware.DefaultMaxRequestBodyBytes, routedHandler)
 	limitedHandler := middleware.RateLimitMiddleware(bodyHandler)
 	authedHandler := middleware.AuthMiddleware(limitedHandler)
-	recoveryHandler := middleware.RecoveryMiddleware(authedHandler)
-	accessLogHandler := middleware.AccessLogMiddleware(recoveryHandler)
+	accessLogHandler := middleware.AccessLogMiddleware(authedHandler)
 	finalChatHandler := middleware.RequestMetaMiddleware(accessLogHandler)
 
 	mux.Handle("POST /v1/chat/completions", finalChatHandler)
@@ -58,20 +57,40 @@ func NewRouter() *http.ServeMux {
 
 	readyHandler := func(w http.ResponseWriter, r *http.Request) {
 		redisStatus := cache.GetRedisStatus()
+		providerStatuses := proxy.GetUpstreamStatuses()
 		resp := healthResponse{
-			Status:       "ok",
-			Time:         time.Now(),
-			Dependencies: map[string]interface{}{"redis": redisStatus},
+			Status: "ok",
+			Time:   time.Now(),
+			Dependencies: map[string]interface{}{
+				"redis":     redisStatus,
+				"providers": providerStatuses,
+			},
 		}
 
+		statusCode := http.StatusOK
+		healthyProviders := 0
+		for _, providerStatus := range providerStatuses {
+			if providerStatus.Healthy {
+				healthyProviders++
+			}
+		}
 		if !redisStatus.Healthy {
 			resp.Status = "degraded"
-			resp.DegradedFeatures = []string{"cache", "distributed_rate_limit"}
+			resp.DegradedFeatures = append(resp.DegradedFeatures, "cache", "distributed_rate_limit")
+		}
+		if len(providerStatuses) > 0 && healthyProviders == 0 {
+			resp.Status = "unavailable"
+			resp.DegradedFeatures = append(resp.DegradedFeatures, "all_upstreams_unavailable")
+			statusCode = http.StatusServiceUnavailable
+		} else if healthyProviders < len(providerStatuses) {
+			if resp.Status == "ok" {
+				resp.Status = "degraded"
+			}
+			resp.DegradedFeatures = append(resp.DegradedFeatures, "upstream_failover")
 		}
 
-		writeJSON(w, http.StatusOK, resp)
+		writeJSON(w, statusCode, resp)
 	}
-
 	mux.HandleFunc("GET /health/ready", readyHandler)
 	mux.HandleFunc("GET /health", readyHandler)
 

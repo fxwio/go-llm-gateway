@@ -13,16 +13,34 @@ type Message struct {
 	Content string `json:"content"`
 }
 
-// GatewayContext 是贯穿我们网关中间件链的核心结构
-// 用于在鉴权、路由、限流等中间件之间传递状态
-type GatewayContext struct {
-	TargetProvider string // 目标厂商 (例如: openai, anthropic)
-	TargetModel    string // 目标厂商的实际模型名 (例如: claude-3-opus-20240229)
-	APIKey         string // 用于访问该厂商的 Key
-	BaseURL        string // 该厂商的网关地址 (例如: https://api.openai.com)
+type ProviderRoute struct {
+	Name            string
+	BaseURL         string
+	APIKey          string
+	Priority        int
+	MaxRetries      int
+	HealthCheckPath string
 }
 
-// OpenAIResponse 代表标准的大模型非流式返回结果
+// GatewayContext 是贯穿网关中间件链的核心结构。
+// 在 M2 中它不仅保存当前命中的 provider，还保存整个 failover 候选集。
+type GatewayContext struct {
+	TargetProvider     string
+	TargetModel        string
+	APIKey             string
+	BaseURL            string
+	CandidateProviders []ProviderRoute
+	AttemptedProviders []string
+	FailoverCount      int
+}
+
+func (g *GatewayContext) SetActiveProvider(provider ProviderRoute) {
+	g.TargetProvider = provider.Name
+	g.APIKey = provider.APIKey
+	g.BaseURL = provider.BaseURL
+}
+
+// OpenAIResponse 代表标准的大模型非流式返回结果。
 type OpenAIResponse struct {
 	ID      string `json:"id"`
 	Model   string `json:"model"`
@@ -32,7 +50,7 @@ type OpenAIResponse struct {
 	Usage Usage `json:"usage"`
 }
 
-// Usage 计费字段
+// Usage 计费字段。
 type Usage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`

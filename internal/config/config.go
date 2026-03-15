@@ -23,6 +23,7 @@ type Config struct {
 	Metrics   MetricsConfig    `mapstructure:"metrics"`
 	Redis     RedisConfig      `mapstructure:"redis"`
 	Auth      AuthConfig       `mapstructure:"auth"`
+	Upstream  UpstreamConfig   `mapstructure:"upstream"`
 	Providers []ProviderConfig `mapstructure:"providers"`
 }
 
@@ -60,12 +61,28 @@ type MetricsConfig struct {
 	EnableOpenMetrics bool     `mapstructure:"enable_openmetrics"`
 }
 
+type UpstreamConfig struct {
+	RetryableStatusCodes    []int   `mapstructure:"retryable_status_codes"`
+	RetryBackoff            string  `mapstructure:"retry_backoff"`
+	DefaultMaxRetries       int     `mapstructure:"default_max_retries"`
+	HealthCheckInterval     string  `mapstructure:"health_check_interval"`
+	HealthCheckTimeout      string  `mapstructure:"health_check_timeout"`
+	BreakerInterval         string  `mapstructure:"breaker_interval"`
+	BreakerTimeout          string  `mapstructure:"breaker_timeout"`
+	BreakerFailureRatio     float64 `mapstructure:"breaker_failure_ratio"`
+	BreakerMinimumRequests  uint32  `mapstructure:"breaker_minimum_requests"`
+	BreakerHalfOpenRequests uint32  `mapstructure:"breaker_half_open_requests"`
+}
+
 type ProviderConfig struct {
-	Name      string   `mapstructure:"name"`
-	BaseURL   string   `mapstructure:"base_url"`
-	APIKeyEnv string   `mapstructure:"api_key_env"`
-	APIKey    string   `mapstructure:"api_key"`
-	Models    []string `mapstructure:"models"`
+	Name            string   `mapstructure:"name"`
+	BaseURL         string   `mapstructure:"base_url"`
+	APIKeyEnv       string   `mapstructure:"api_key_env"`
+	APIKey          string   `mapstructure:"api_key"`
+	Models          []string `mapstructure:"models"`
+	Priority        int      `mapstructure:"priority"`
+	MaxRetries      int      `mapstructure:"max_retries"`
+	HealthCheckPath string   `mapstructure:"health_check_path"`
 }
 
 var GlobalConfig *Config
@@ -108,6 +125,7 @@ func LoadConfig(path string) error {
 		return fmt.Errorf("resolve metrics config: %w", err)
 	}
 	normalizeConfig(cfg)
+	applyUpstreamDefaults(cfg)
 	if err := validateConfig(cfg); err != nil {
 		return fmt.Errorf("validate config: %w", err)
 	}
@@ -140,6 +158,17 @@ func setDefaults() {
 
 	viper.SetDefault("redis.addr", "redis:6379")
 	viper.SetDefault("redis.db", 0)
+
+	viper.SetDefault("upstream.retryable_status_codes", []int{429, 500, 502, 503, 504})
+	viper.SetDefault("upstream.retry_backoff", "200ms")
+	viper.SetDefault("upstream.default_max_retries", 1)
+	viper.SetDefault("upstream.health_check_interval", "15s")
+	viper.SetDefault("upstream.health_check_timeout", "2s")
+	viper.SetDefault("upstream.breaker_interval", "10s")
+	viper.SetDefault("upstream.breaker_timeout", "15s")
+	viper.SetDefault("upstream.breaker_failure_ratio", 0.5)
+	viper.SetDefault("upstream.breaker_minimum_requests", 5)
+	viper.SetDefault("upstream.breaker_half_open_requests", 3)
 }
 
 func normalizeConfig(cfg *Config) {
@@ -169,6 +198,12 @@ func normalizeConfig(cfg *Config) {
 	}
 	cfg.Metrics.AllowedCIDRs = uniqueNonEmpty(cfg.Metrics.AllowedCIDRs)
 
+	cfg.Upstream.RetryBackoff = strings.TrimSpace(cfg.Upstream.RetryBackoff)
+	cfg.Upstream.HealthCheckInterval = strings.TrimSpace(cfg.Upstream.HealthCheckInterval)
+	cfg.Upstream.HealthCheckTimeout = strings.TrimSpace(cfg.Upstream.HealthCheckTimeout)
+	cfg.Upstream.BreakerInterval = strings.TrimSpace(cfg.Upstream.BreakerInterval)
+	cfg.Upstream.BreakerTimeout = strings.TrimSpace(cfg.Upstream.BreakerTimeout)
+
 	for i := range cfg.Providers {
 		provider := &cfg.Providers[i]
 		provider.Name = strings.TrimSpace(provider.Name)
@@ -176,6 +211,7 @@ func normalizeConfig(cfg *Config) {
 		provider.APIKeyEnv = strings.TrimSpace(provider.APIKeyEnv)
 		provider.APIKey = strings.TrimSpace(provider.APIKey)
 		provider.Models = uniqueNonEmpty(provider.Models)
+		provider.HealthCheckPath = strings.TrimSpace(provider.HealthCheckPath)
 	}
 }
 
@@ -253,6 +289,48 @@ func resolveMetricsConfig(cfg *Config) error {
 	return nil
 }
 
+func applyUpstreamDefaults(cfg *Config) {
+	if cfg.Upstream.DefaultMaxRetries < 0 {
+		cfg.Upstream.DefaultMaxRetries = 0
+	}
+	if len(cfg.Upstream.RetryableStatusCodes) == 0 {
+		cfg.Upstream.RetryableStatusCodes = []int{httpStatusTooManyRequests, 500, 502, 503, 504}
+	}
+	if strings.TrimSpace(cfg.Upstream.RetryBackoff) == "" {
+		cfg.Upstream.RetryBackoff = "200ms"
+	}
+	if strings.TrimSpace(cfg.Upstream.HealthCheckInterval) == "" {
+		cfg.Upstream.HealthCheckInterval = "15s"
+	}
+	if strings.TrimSpace(cfg.Upstream.HealthCheckTimeout) == "" {
+		cfg.Upstream.HealthCheckTimeout = "2s"
+	}
+	if strings.TrimSpace(cfg.Upstream.BreakerInterval) == "" {
+		cfg.Upstream.BreakerInterval = "10s"
+	}
+	if strings.TrimSpace(cfg.Upstream.BreakerTimeout) == "" {
+		cfg.Upstream.BreakerTimeout = "15s"
+	}
+	if cfg.Upstream.BreakerFailureRatio <= 0 || cfg.Upstream.BreakerFailureRatio > 1 {
+		cfg.Upstream.BreakerFailureRatio = 0.5
+	}
+	if cfg.Upstream.BreakerMinimumRequests == 0 {
+		cfg.Upstream.BreakerMinimumRequests = 5
+	}
+	if cfg.Upstream.BreakerHalfOpenRequests == 0 {
+		cfg.Upstream.BreakerHalfOpenRequests = 3
+	}
+
+	for i := range cfg.Providers {
+		if cfg.Providers[i].Priority <= 0 {
+			cfg.Providers[i].Priority = 100
+		}
+		if cfg.Providers[i].MaxRetries < 0 {
+			cfg.Providers[i].MaxRetries = 0
+		}
+	}
+}
+
 func validateConfig(cfg *Config) error {
 	if cfg == nil {
 		return fmt.Errorf("config is nil")
@@ -292,6 +370,21 @@ func validateConfig(cfg *Config) error {
 	}
 	if len(cfg.Auth.ValidTokens) == 0 {
 		return fmt.Errorf("at least one gateway token must be configured via auth.valid_tokens or auth.valid_tokens_env")
+	}
+
+	for _, durationValue := range []struct {
+		name  string
+		value string
+	}{
+		{name: "upstream.retry_backoff", value: cfg.Upstream.RetryBackoff},
+		{name: "upstream.health_check_interval", value: cfg.Upstream.HealthCheckInterval},
+		{name: "upstream.health_check_timeout", value: cfg.Upstream.HealthCheckTimeout},
+		{name: "upstream.breaker_interval", value: cfg.Upstream.BreakerInterval},
+		{name: "upstream.breaker_timeout", value: cfg.Upstream.BreakerTimeout},
+	} {
+		if err := validatePositiveDuration(durationValue.name, durationValue.value); err != nil {
+			return err
+		}
 	}
 
 	if !strings.HasPrefix(cfg.Metrics.Path, "/") {
@@ -335,10 +428,18 @@ func validateConfig(cfg *Config) error {
 		if len(provider.Models) == 0 {
 			return fmt.Errorf("provider %q must configure at least one model", provider.Name)
 		}
+		if provider.Priority <= 0 {
+			return fmt.Errorf("provider %q priority must be greater than 0", provider.Name)
+		}
+		if provider.MaxRetries < 0 {
+			return fmt.Errorf("provider %q max_retries must be greater than or equal to 0", provider.Name)
+		}
 	}
 
 	return nil
 }
+
+const httpStatusTooManyRequests = 429
 
 func validatePositiveDuration(fieldName, raw string) error {
 	d, err := time.ParseDuration(strings.TrimSpace(raw))
