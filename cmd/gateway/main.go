@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/fxwio/go-llm-gateway/internal/audit"
+	"github.com/fxwio/go-llm-gateway/internal/buildinfo"
 	"github.com/fxwio/go-llm-gateway/internal/config"
 	"github.com/fxwio/go-llm-gateway/internal/router"
 	"github.com/fxwio/go-llm-gateway/pkg/cache"
@@ -52,10 +53,14 @@ func main() {
 		IdleTimeout:       idleTimeout,
 	}
 
+	info := buildinfo.Current()
 	logger.Log.Info("starting Go-LLM-Gateway",
 		zap.String("addr", addr),
 		zap.String("config_path", configPath),
 		zap.String("metrics_path", config.GlobalConfig.Metrics.Path),
+		zap.String("version", info.Version),
+		zap.String("commit", info.Commit),
+		zap.String("build_date", info.BuildDate),
 		zap.Int("provider_count", len(config.GlobalConfig.Providers)),
 	)
 

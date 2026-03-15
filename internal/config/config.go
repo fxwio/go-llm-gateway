@@ -21,6 +21,7 @@ const (
 type Config struct {
 	Server    ServerConfig     `mapstructure:"server"`
 	Metrics   MetricsConfig    `mapstructure:"metrics"`
+	Debug     DebugConfig      `mapstructure:"debug"`
 	Redis     RedisConfig      `mapstructure:"redis"`
 	Auth      AuthConfig       `mapstructure:"auth"`
 	Cache     CacheConfig      `mapstructure:"cache"`
@@ -59,6 +60,13 @@ type AdminConfig struct {
 	BearerTokenEnv string   `mapstructure:"bearer_token_env"`
 	BearerToken    string   `mapstructure:"bearer_token"`
 	AllowedCIDRs   []string `mapstructure:"allowed_cidrs"`
+	RateLimitRPS   float64  `mapstructure:"rate_limit_rps"`
+	RateLimitBurst int      `mapstructure:"rate_limit_burst"`
+}
+
+type DebugConfig struct {
+	PprofEnabled    bool   `mapstructure:"pprof_enabled"`
+	PprofPathPrefix string `mapstructure:"pprof_path_prefix"`
 }
 
 type ServerConfig struct {
@@ -192,8 +200,12 @@ func setDefaults() {
 	viper.SetDefault("metrics.path", "/metrics")
 	viper.SetDefault("metrics.rate_limit_rps", 5)
 	viper.SetDefault("metrics.rate_limit_burst", 10)
+	viper.SetDefault("debug.pprof_enabled", false)
+	viper.SetDefault("debug.pprof_path_prefix", "/debug/pprof")
 	viper.SetDefault("auth.rate_limit_qps", 10)
 	viper.SetDefault("auth.rate_limit_burst", 20)
+	viper.SetDefault("auth.admin.rate_limit_rps", 2)
+	viper.SetDefault("auth.admin.rate_limit_burst", 4)
 	viper.SetDefault("redis.addr", "redis:6379")
 	viper.SetDefault("redis.db", 0)
 	viper.SetDefault("cache.enabled", true)
@@ -222,6 +234,7 @@ func normalizeConfig(cfg *Config) {
 	cfg.Metrics.Path = strings.TrimSpace(cfg.Metrics.Path)
 	cfg.Metrics.BearerTokenEnv = strings.TrimSpace(cfg.Metrics.BearerTokenEnv)
 	cfg.Metrics.BearerToken = strings.TrimSpace(cfg.Metrics.BearerToken)
+	cfg.Debug.PprofPathPrefix = strings.TrimSpace(cfg.Debug.PprofPathPrefix)
 	cfg.Redis.Addr = strings.TrimSpace(cfg.Redis.Addr)
 	cfg.Redis.Password = strings.TrimSpace(cfg.Redis.Password)
 	cfg.Auth.ValidTokensEnv = strings.TrimSpace(cfg.Auth.ValidTokensEnv)
@@ -347,14 +360,19 @@ func resolveAdminConfig(cfg *Config) error {
 		return fmt.Errorf("auth.admin.bearer_token must not be set in config file; use auth.admin.bearer_token_env instead")
 	}
 	envName := strings.TrimSpace(cfg.Auth.Admin.BearerTokenEnv)
-	if envName == "" {
-		return nil
+	if envName != "" {
+		envValue, ok := os.LookupEnv(envName)
+		if !ok || strings.TrimSpace(envValue) == "" {
+			return fmt.Errorf("auth.admin requires environment variable %s, but it is not set", envName)
+		}
+		cfg.Auth.Admin.BearerToken = strings.TrimSpace(envValue)
 	}
-	envValue, ok := os.LookupEnv(envName)
-	if !ok || strings.TrimSpace(envValue) == "" {
-		return fmt.Errorf("auth.admin requires environment variable %s, but it is not set", envName)
+	if cfg.Auth.Admin.RateLimitRPS <= 0 {
+		cfg.Auth.Admin.RateLimitRPS = 2
 	}
-	cfg.Auth.Admin.BearerToken = strings.TrimSpace(envValue)
+	if cfg.Auth.Admin.RateLimitBurst <= 0 {
+		cfg.Auth.Admin.RateLimitBurst = 4
+	}
 	return nil
 }
 
@@ -453,11 +471,20 @@ func validateConfig(cfg *Config) error {
 	if !strings.HasPrefix(cfg.Metrics.Path, "/") {
 		return fmt.Errorf("metrics.path must start with /")
 	}
+	if !strings.HasPrefix(cfg.Debug.PprofPathPrefix, "/") {
+		return fmt.Errorf("debug.pprof_path_prefix must start with /")
+	}
 	if cfg.Metrics.RateLimitRPS <= 0 {
 		return fmt.Errorf("metrics.rate_limit_rps must be > 0")
 	}
 	if cfg.Metrics.RateLimitBurst <= 0 {
 		return fmt.Errorf("metrics.rate_limit_burst must be > 0")
+	}
+	if cfg.Auth.Admin.RateLimitRPS <= 0 {
+		return fmt.Errorf("auth.admin.rate_limit_rps must be > 0")
+	}
+	if cfg.Auth.Admin.RateLimitBurst <= 0 {
+		return fmt.Errorf("auth.admin.rate_limit_burst must be > 0")
 	}
 	for _, cidr := range cfg.Server.TrustedProxyCIDRs {
 		if _, _, err := net.ParseCIDR(cidr); err != nil {

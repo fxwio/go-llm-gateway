@@ -1,29 +1,67 @@
-name: CI Pipeline
+name: ci
 
 on:
-  push:
-    branches: [ "main" ]
   pull_request:
-    branches: [ "main" ]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build-and-test:
+  quality:
     runs-on: ubuntu-latest
-
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
     steps:
-    - name: Checkout Code
-      uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Set up Go 1.25
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.25'
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
 
-    - name: Download Dependencies
-      run: go mod download
+      - name: Install toolchain
+        run: |
+          go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
 
-    - name: Build Gateway
-      run: go build -v ./...
+      - name: Install Helm
+        run: curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 
-    - name: Run Tests with Race Detector
-      run: go test -v -race -cover ./...
+      - name: Run lint
+        run: make lint
+
+      - name: Run staticcheck
+        run: make staticcheck
+
+      - name: Run gosec
+        run: make security
+
+      - name: Run unit tests
+        run: make test
+
+      - name: Run integration tests
+        env:
+          GATEWAY_VALID_TOKENS: test-token
+          GATEWAY_ADMIN_TOKEN: admin-token
+          METRICS_BEARER_TOKEN: metrics-token
+          OPENAI_API_KEY: dummy-openai-key
+        run: make integration-test
+
+      - name: Run benchmarks
+        env:
+          GATEWAY_VALID_TOKENS: test-token
+          GATEWAY_ADMIN_TOKEN: admin-token
+          METRICS_BEARER_TOKEN: metrics-token
+          OPENAI_API_KEY: dummy-openai-key
+        run: make benchmark
+
+      - name: Lint Helm chart
+        run: make helm-lint

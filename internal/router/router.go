@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/fxwio/go-llm-gateway/internal/buildinfo"
 	"github.com/fxwio/go-llm-gateway/internal/config"
 	"github.com/fxwio/go-llm-gateway/internal/middleware"
 	"github.com/fxwio/go-llm-gateway/internal/proxy"
@@ -42,6 +43,10 @@ func NewRouter() *http.ServeMux {
 	metricsInstrumentedHandler := promhttp.InstrumentMetricHandler(prometheus.DefaultRegisterer, metricsBaseHandler)
 	protectedMetricsHandler := middleware.MetricsEndpointMiddleware(metricsInstrumentedHandler)
 	mux.Handle(config.GlobalConfig.Metrics.Path, protectedMetricsHandler)
+
+	mux.HandleFunc("GET /version", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, buildinfo.Current())
+	})
 
 	mux.HandleFunc("GET /health/live", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, healthResponse{Status: "alive", Time: time.Now()})

@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "go-llm-gateway.fullname" . }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "go-llm-gateway.name" . }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "go-llm-gateway.name" . }}
+      annotations:
+        checksum/config: {{ toYaml .Values.gatewayConfig | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "go-llm-gateway.serviceAccountName" . }}
+      securityContext:
+{{ toYaml .Values.podSecurityContext | indent 8 }}
+      containers:
+        - name: gateway
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+{{ toYaml .Values.securityContext | indent 12 }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: GATEWAY_CONFIG_PATH
+              value: /etc/go-llm-gateway/config.yaml
+          {{- if .Values.envFromSecret.enabled }}
+          envFrom:
+            - secretRef:
+                name: {{ default (printf "%s-env" (include "go-llm-gateway.fullname" .)) .Values.envFromSecret.existingSecretName }}
+          {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/go-llm-gateway
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.probes.readiness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probes.liveness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+          resources:
+{{ toYaml .Values.resources | indent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "go-llm-gateway.fullname" . }}-config
+        - name: tmp
+          emptyDir: {}

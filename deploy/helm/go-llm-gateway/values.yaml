@@ -1,0 +1,125 @@
+replicaCount: 2
+
+image:
+  repository: ghcr.io/fxwio/go-llm-gateway
+  tag: "0.6.0"
+  pullPolicy: IfNotPresent
+
+serviceAccount:
+  create: true
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+service:
+  type: ClusterIP
+  port: 8080
+
+ingress:
+  enabled: false
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+pdb:
+  enabled: true
+  minAvailable: 1
+
+networkPolicy:
+  enabled: true
+  ingress:
+    - from:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 8080
+
+envFromSecret:
+  enabled: true
+  existingSecretName: ""
+  data:
+    GATEWAY_VALID_TOKENS: ""
+    GATEWAY_ADMIN_TOKEN: ""
+    METRICS_BEARER_TOKEN: ""
+    OPENAI_API_KEY: ""
+
+gatewayConfig:
+  server:
+    host: ""
+    port: 8080
+    read_timeout: 300s
+    read_header_timeout: 10s
+    write_timeout: 300s
+    idle_timeout: 120s
+    shutdown_timeout: 10s
+    trusted_proxy_cidrs:
+      - "10.0.0.0/8"
+      - "172.16.0.0/12"
+      - "192.168.0.0/16"
+  metrics:
+    path: /metrics
+    bearer_token_env: METRICS_BEARER_TOKEN
+    allowed_cidrs:
+      - "10.0.0.0/8"
+    rate_limit_rps: 5
+    rate_limit_burst: 10
+    enable_openmetrics: true
+  debug:
+    pprof_enabled: false
+    pprof_path_prefix: /debug/pprof
+  redis:
+    addr: redis:6379
+    password: ""
+    db: 0
+  auth:
+    valid_tokens_env: GATEWAY_VALID_TOKENS
+    rate_limit_qps: 10
+    rate_limit_burst: 20
+    admin:
+      bearer_token_env: GATEWAY_ADMIN_TOKEN
+      allowed_cidrs:
+        - "10.0.0.0/8"
+      rate_limit_rps: 2
+      rate_limit_burst: 4
+  cache:
+    enabled: true
+    ttl: 24h
+    max_payload_bytes: 1048576
+    coalesce_enabled: true
+  providers: []
+
+probes:
+  liveness:
+    path: /health/live
+    initialDelaySeconds: 10
+    periodSeconds: 10
+  readiness:
+    path: /health/ready
+    initialDelaySeconds: 5
+    periodSeconds: 5
