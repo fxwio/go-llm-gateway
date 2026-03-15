@@ -30,7 +30,8 @@ func NewRouter() *http.ServeMux {
 	bodyHandler := middleware.BodyContextMiddleware(middleware.DefaultMaxRequestBodyBytes, routedHandler)
 	limitedHandler := middleware.RateLimitMiddleware(bodyHandler)
 	authedHandler := middleware.AuthMiddleware(limitedHandler)
-	accessLogHandler := middleware.AccessLogMiddleware(authedHandler)
+	recoveryHandler := middleware.RecoveryMiddleware(authedHandler)
+	accessLogHandler := middleware.AccessLogMiddleware(recoveryHandler)
 	finalChatHandler := middleware.RequestMetaMiddleware(accessLogHandler)
 
 	mux.Handle("POST /v1/chat/completions", finalChatHandler)
@@ -57,7 +58,6 @@ func NewRouter() *http.ServeMux {
 
 	readyHandler := func(w http.ResponseWriter, r *http.Request) {
 		redisStatus := cache.GetRedisStatus()
-
 		resp := healthResponse{
 			Status:       "ok",
 			Time:         time.Now(),

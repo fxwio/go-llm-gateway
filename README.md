@@ -7,60 +7,48 @@
 
 A high-performance, lightweight API gateway for Large Language Models (LLMs) built natively in Go. Designed for enterprise-grade throughput, robust rate limiting, and seamless Server-Sent Events (SSE) streaming.
 
-## 💡 Why This Project?
-
-Integrating multiple LLM providers (OpenAI, Anthropic, Gemini) directly into client applications often leads to fragmented authentication, difficult cost tracking, and lack of traffic control. 
-
-Drawing on years of experience in building high-concurrency enterprise microservices, **Go-LLM-Gateway** acts as a unified, secure, and highly optimized central proxy. It standardizes traffic into the OpenAI API format while providing essential observability and protection.
-
 ## ✨ Core Features
 
-- 🚀 **Zero-Allocation Routing:** Optimized HTTP request multiplexing and dynamic provider routing.
-- 🌊 **Native SSE Support:** Perfect streaming (`stream: true`) pass-through without buffering destruction.
-- 🛡️ **Enterprise Security:** In-memory Token-Bucket rate limiting and Bearer token authentication.
-- 🔄 **Multi-Provider Support:** Unified interface for OpenAI, Anthropic (Claude), and any OpenAI-compatible endpoints (e.g., Ollama, vLLM).
-- 📊 **Observability:** High-performance structured logging powered by Uber's `zap`.
-
-## 🏗 Architecture
-
-
-
-The gateway utilizes a strict middleware onion model, ensuring traffic is validated and throttled before ever establishing a connection to the downstream AI providers.
+- 🚀 High-performance gateway pipeline with streaming passthrough
+- 🛡️ Bearer token authentication and request rate limiting
+- 🔄 Multi-provider routing for OpenAI-compatible upstreams
+- 📊 Prometheus metrics and health checks
+- 🧱 Production-oriented config validation and startup fail-fast
 
 ## 🚀 Quick Start
 
-### 1. Configuration
-Create a `config.yaml` in the root directory:
+### 1. Prepare configuration
 
-```yaml
-server:
-  port: 8080
-auth:
-  valid_tokens:
-    - "sk-my-gateway-token-001"
-  rate_limit_qps: 10
-  rate_limit_burst: 20
-providers:
-  - name: "openai"
-    base_url: "https://api.openai.com"
-    api_key: "sk-your-openai-key"
-    models:
-      - "gpt-4o"
-      - "gpt-3.5-turbo"
+```bash
+cp config.example.yaml config.yaml
+cp .env.example .env
 ```
 
-### 2. Run with Docker
-```Bash
-docker build -t go-llm-gateway .
-docker run -p 8080:8080 -v $(pwd)/config.yaml:/app/config.yaml go-llm-gateway
+Fill the real secrets in `.env`:
+
+```dotenv
+GATEWAY_VALID_TOKENS=sk-gateway-token-001,sk-gateway-token-002
+OPENAI_API_KEY=sk-your-openai-key
+ANTHROPIC_API_KEY=sk-ant-your-anthropic-key
+SILICONFLOW_API_KEY=sk-your-siliconflow-key
+METRICS_BEARER_TOKEN=replace-with-a-long-random-token
 ```
+
+`config.yaml` keeps non-secret runtime settings only. Provider API keys and metrics bearer tokens must be injected through environment variables.
+
+### 2. Run with Docker Compose
+
+```bash
+docker compose up -d --build
+```
+
+The container reads configuration from `GATEWAY_CONFIG_PATH=/etc/go-llm-gateway/config.yaml`, and the compose file mounts your local `config.yaml` read-only into that path.
 
 ### 3. Usage
-Use any standard OpenAI SDK or curl to interact with the gateway:
 
-```Bash
+```bash
 curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "Authorization: Bearer sk-my-gateway-token-001" \
+  -H "Authorization: Bearer sk-gateway-token-001" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "gpt-4o",
@@ -69,5 +57,14 @@ curl -X POST http://localhost:8080/v1/chat/completions \
   }'
 ```
 
-### 📜 License
+## 🔐 Production notes
+
+- Do not commit `config.yaml` or `.env`.
+- Do not place provider `api_key` values inside YAML.
+- The image does not bake configuration into the container; inject it through bind mount, Secret, or ConfigMap.
+- The server fails fast on invalid timeout, CIDR, port, token, and provider `base_url` settings.
+- A panic recovery middleware is enabled so a single bad request will not crash the whole process.
+
+## 📜 License
+
 Distributed under the MIT License. See LICENSE for more information.

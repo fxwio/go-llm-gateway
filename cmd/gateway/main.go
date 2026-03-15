@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -18,42 +19,47 @@ import (
 )
 
 func main() {
-	config.LoadConfig("config.yaml")
-
 	logger.InitLogger()
 	defer logger.Sync()
+
+	configPath := config.ResolveConfigPath("")
+	if err := config.LoadConfig(configPath); err != nil {
+		logger.Log.Fatal("failed to load configuration",
+			zap.String("config_path", configPath),
+			zap.Error(err),
+		)
+	}
 
 	audit.InitAuditor()
 	cache.InitRedis()
 
 	r := router.NewRouter()
 
-	readTimeout, _ := time.ParseDuration(config.GlobalConfig.Server.ReadTimeout)
-	writeTimeout, _ := time.ParseDuration(config.GlobalConfig.Server.WriteTimeout)
+	readTimeout := mustParseDuration(config.GlobalConfig.Server.ReadTimeout, 300*time.Second)
+	readHeaderTimeout := mustParseDuration(config.GlobalConfig.Server.ReadHeaderTimeout, 10*time.Second)
+	writeTimeout := mustParseDuration(config.GlobalConfig.Server.WriteTimeout, 300*time.Second)
+	idleTimeout := mustParseDuration(config.GlobalConfig.Server.IdleTimeout, 120*time.Second)
+	shutdownTimeout := mustParseDuration(config.GlobalConfig.Server.ShutdownTimeout, 10*time.Second)
 
-	if readTimeout == 0 {
-		readTimeout = 300 * time.Second
-	}
-	if writeTimeout == 0 {
-		writeTimeout = 300 * time.Second
-	}
-
-	port := config.GlobalConfig.Server.Port
-	if port == 0 {
-		port = 8080
-	}
-	addr := fmt.Sprintf(":%d", port)
+	addr := net.JoinHostPort(config.GlobalConfig.Server.Host, fmt.Sprintf("%d", config.GlobalConfig.Server.Port))
 
 	srv := &http.Server{
-		Addr:         addr,
-		Handler:      r,
-		ReadTimeout:  readTimeout,
-		WriteTimeout: writeTimeout,
-		IdleTimeout:  120 * time.Second,
+		Addr:              addr,
+		Handler:           r,
+		ReadTimeout:       readTimeout,
+		ReadHeaderTimeout: readHeaderTimeout,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
 	}
 
+	logger.Log.Info("starting Go-LLM-Gateway",
+		zap.String("addr", addr),
+		zap.String("config_path", configPath),
+		zap.String("metrics_path", config.GlobalConfig.Metrics.Path),
+		zap.Int("provider_count", len(config.GlobalConfig.Providers)),
+	)
+
 	go func() {
-		logger.Log.Info("Starting Go-LLM-Gateway", zap.String("addr", addr))
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Log.Fatal("ListenAndServe failed", zap.Error(err))
 		}
@@ -63,14 +69,25 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	logger.Log.Info("Shutting down server gracefully...")
+	logger.Log.Info("shutting down server gracefully", zap.Duration("timeout", shutdownTimeout))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 
 	if err := srv.Shutdown(ctx); err != nil {
-		logger.Log.Fatal("Server forced to shutdown", zap.Error(err))
+		logger.Log.Fatal("server forced to shutdown", zap.Error(err))
 	}
 
-	logger.Log.Info("Server exited")
+	logger.Log.Info("server exited")
+}
+
+func mustParseDuration(raw string, fallback time.Duration) time.Duration {
+	if raw == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return fallback
+	}
+	return d
 }

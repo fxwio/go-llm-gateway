@@ -2,3 +2,4 @@ build/
 llm-gateway
 .vscode
 .env
+config.yaml

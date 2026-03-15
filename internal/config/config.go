@@ -4,10 +4,18 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/url"
 	"os"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/viper"
+)
+
+const (
+	DefaultConfigPath = "config.yaml"
+	ConfigPathEnv     = "GATEWAY_CONFIG_PATH"
 )
 
 type Config struct {
@@ -26,14 +34,19 @@ type RedisConfig struct {
 
 type AuthConfig struct {
 	ValidTokens    []string `mapstructure:"valid_tokens"`
+	ValidTokensEnv string   `mapstructure:"valid_tokens_env"`
 	RateLimitQPS   float64  `mapstructure:"rate_limit_qps"`
 	RateLimitBurst int      `mapstructure:"rate_limit_burst"`
 }
 
 type ServerConfig struct {
+	Host              string   `mapstructure:"host"`
 	Port              int      `mapstructure:"port"`
 	ReadTimeout       string   `mapstructure:"read_timeout"`
+	ReadHeaderTimeout string   `mapstructure:"read_header_timeout"`
 	WriteTimeout      string   `mapstructure:"write_timeout"`
+	IdleTimeout       string   `mapstructure:"idle_timeout"`
+	ShutdownTimeout   string   `mapstructure:"shutdown_timeout"`
 	TrustedProxyCIDRs []string `mapstructure:"trusted_proxy_cidrs"`
 }
 
@@ -57,35 +70,129 @@ type ProviderConfig struct {
 
 var GlobalConfig *Config
 
-func LoadConfig(path string) {
-	viper.SetConfigFile(path)
+func ResolveConfigPath(explicitPath string) string {
+	if path := strings.TrimSpace(explicitPath); path != "" {
+		return path
+	}
+	if path := strings.TrimSpace(os.Getenv(ConfigPathEnv)); path != "" {
+		return path
+	}
+	return DefaultConfigPath
+}
+
+func LoadConfig(path string) error {
+	resolvedPath := ResolveConfigPath(path)
+
+	viper.SetConfigFile(resolvedPath)
 	viper.SetConfigType("yaml")
-	viper.AutomaticEnv()
 	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	viper.AutomaticEnv()
+	setDefaults()
 
 	if err := viper.ReadInConfig(); err != nil {
-		log.Fatalf("error reading config file: %v", err)
+		return fmt.Errorf("read config file %q: %w", resolvedPath, err)
 	}
 
 	cfg := &Config{}
 	if err := viper.Unmarshal(cfg); err != nil {
-		log.Fatalf("unable to decode config: %v", err)
+		return fmt.Errorf("decode config: %w", err)
 	}
 
+	if err := resolveAuthTokens(cfg); err != nil {
+		return fmt.Errorf("resolve auth tokens: %w", err)
+	}
 	if err := resolveProviderAPIKeys(cfg); err != nil {
-		log.Fatalf("failed to resolve provider api keys: %v", err)
+		return fmt.Errorf("resolve provider api keys: %w", err)
 	}
-
 	if err := resolveMetricsConfig(cfg); err != nil {
-		log.Fatalf("failed to resolve metrics config: %v", err)
+		return fmt.Errorf("resolve metrics config: %w", err)
 	}
-
+	normalizeConfig(cfg)
 	if err := validateConfig(cfg); err != nil {
-		log.Fatalf("invalid configuration: %v", err)
+		return fmt.Errorf("validate config: %w", err)
 	}
 
 	GlobalConfig = cfg
-	log.Printf("Configuration loaded successfully. Loaded %d providers.", len(GlobalConfig.Providers))
+	log.Printf(
+		"Configuration loaded successfully. path=%s providers=%d provider_names=%s",
+		resolvedPath,
+		len(cfg.Providers),
+		strings.Join(providerNames(cfg.Providers), ","),
+	)
+	return nil
+}
+
+func setDefaults() {
+	viper.SetDefault("server.host", "")
+	viper.SetDefault("server.port", 8080)
+	viper.SetDefault("server.read_timeout", "300s")
+	viper.SetDefault("server.read_header_timeout", "10s")
+	viper.SetDefault("server.write_timeout", "300s")
+	viper.SetDefault("server.idle_timeout", "120s")
+	viper.SetDefault("server.shutdown_timeout", "10s")
+
+	viper.SetDefault("metrics.path", "/metrics")
+	viper.SetDefault("metrics.rate_limit_rps", 5)
+	viper.SetDefault("metrics.rate_limit_burst", 10)
+
+	viper.SetDefault("auth.rate_limit_qps", 10)
+	viper.SetDefault("auth.rate_limit_burst", 20)
+
+	viper.SetDefault("redis.addr", "redis:6379")
+	viper.SetDefault("redis.db", 0)
+}
+
+func normalizeConfig(cfg *Config) {
+	cfg.Server.Host = strings.TrimSpace(cfg.Server.Host)
+	cfg.Server.ReadTimeout = strings.TrimSpace(cfg.Server.ReadTimeout)
+	cfg.Server.ReadHeaderTimeout = strings.TrimSpace(cfg.Server.ReadHeaderTimeout)
+	cfg.Server.WriteTimeout = strings.TrimSpace(cfg.Server.WriteTimeout)
+	cfg.Server.IdleTimeout = strings.TrimSpace(cfg.Server.IdleTimeout)
+	cfg.Server.ShutdownTimeout = strings.TrimSpace(cfg.Server.ShutdownTimeout)
+
+	cfg.Metrics.Path = strings.TrimSpace(cfg.Metrics.Path)
+	cfg.Metrics.BearerTokenEnv = strings.TrimSpace(cfg.Metrics.BearerTokenEnv)
+	cfg.Metrics.BearerToken = strings.TrimSpace(cfg.Metrics.BearerToken)
+	cfg.Redis.Addr = strings.TrimSpace(cfg.Redis.Addr)
+	cfg.Redis.Password = strings.TrimSpace(cfg.Redis.Password)
+
+	cfg.Auth.ValidTokensEnv = strings.TrimSpace(cfg.Auth.ValidTokensEnv)
+	cfg.Auth.ValidTokens = uniqueNonEmpty(cfg.Auth.ValidTokens)
+
+	for i := range cfg.Server.TrustedProxyCIDRs {
+		cfg.Server.TrustedProxyCIDRs[i] = strings.TrimSpace(cfg.Server.TrustedProxyCIDRs[i])
+	}
+	cfg.Server.TrustedProxyCIDRs = uniqueNonEmpty(cfg.Server.TrustedProxyCIDRs)
+
+	for i := range cfg.Metrics.AllowedCIDRs {
+		cfg.Metrics.AllowedCIDRs[i] = strings.TrimSpace(cfg.Metrics.AllowedCIDRs[i])
+	}
+	cfg.Metrics.AllowedCIDRs = uniqueNonEmpty(cfg.Metrics.AllowedCIDRs)
+
+	for i := range cfg.Providers {
+		provider := &cfg.Providers[i]
+		provider.Name = strings.TrimSpace(provider.Name)
+		provider.BaseURL = strings.TrimRight(strings.TrimSpace(provider.BaseURL), "/")
+		provider.APIKeyEnv = strings.TrimSpace(provider.APIKeyEnv)
+		provider.APIKey = strings.TrimSpace(provider.APIKey)
+		provider.Models = uniqueNonEmpty(provider.Models)
+	}
+}
+
+func resolveAuthTokens(cfg *Config) error {
+	envName := strings.TrimSpace(cfg.Auth.ValidTokensEnv)
+	if envName == "" {
+		cfg.Auth.ValidTokens = uniqueNonEmpty(cfg.Auth.ValidTokens)
+		return nil
+	}
+
+	rawValue, ok := os.LookupEnv(envName)
+	if !ok || strings.TrimSpace(rawValue) == "" {
+		return fmt.Errorf("auth token environment variable %s is not set", envName)
+	}
+
+	cfg.Auth.ValidTokens = mergeUnique(cfg.Auth.ValidTokens, splitEnvList(rawValue))
+	return nil
 }
 
 func resolveProviderAPIKeys(cfg *Config) error {
@@ -151,55 +258,181 @@ func validateConfig(cfg *Config) error {
 		return fmt.Errorf("config is nil")
 	}
 
-	if len(cfg.Providers) == 0 {
-		return fmt.Errorf("at least one provider must be configured")
+	if cfg.Server.Port <= 0 || cfg.Server.Port > 65535 {
+		return fmt.Errorf("server.port must be between 1 and 65535")
+	}
+	if err := validatePositiveDuration("server.read_timeout", cfg.Server.ReadTimeout); err != nil {
+		return err
+	}
+	if err := validatePositiveDuration("server.read_header_timeout", cfg.Server.ReadHeaderTimeout); err != nil {
+		return err
+	}
+	if err := validatePositiveDuration("server.write_timeout", cfg.Server.WriteTimeout); err != nil {
+		return err
+	}
+	if err := validatePositiveDuration("server.idle_timeout", cfg.Server.IdleTimeout); err != nil {
+		return err
+	}
+	if err := validatePositiveDuration("server.shutdown_timeout", cfg.Server.ShutdownTimeout); err != nil {
+		return err
 	}
 
-	for _, cidr := range cfg.Server.TrustedProxyCIDRs {
-		cidr = strings.TrimSpace(cidr)
-		if cidr == "" {
-			continue
-		}
-		if _, _, err := net.ParseCIDR(cidr); err != nil {
-			return fmt.Errorf("invalid trusted proxy cidr %q: %w", cidr, err)
-		}
+	if cfg.Redis.DB < 0 {
+		return fmt.Errorf("redis.db must be >= 0")
+	}
+	if strings.TrimSpace(cfg.Redis.Addr) == "" {
+		return fmt.Errorf("redis.addr cannot be empty")
 	}
 
-	for _, cidr := range cfg.Metrics.AllowedCIDRs {
-		cidr = strings.TrimSpace(cidr)
-		if cidr == "" {
-			continue
-		}
-		if _, _, err := net.ParseCIDR(cidr); err != nil {
-			return fmt.Errorf("invalid metrics allowed cidr %q: %w", cidr, err)
-		}
+	if cfg.Auth.RateLimitQPS <= 0 {
+		return fmt.Errorf("auth.rate_limit_qps must be > 0")
+	}
+	if cfg.Auth.RateLimitBurst <= 0 {
+		return fmt.Errorf("auth.rate_limit_burst must be > 0")
+	}
+	if len(cfg.Auth.ValidTokens) == 0 {
+		return fmt.Errorf("at least one gateway token must be configured via auth.valid_tokens or auth.valid_tokens_env")
 	}
 
 	if !strings.HasPrefix(cfg.Metrics.Path, "/") {
 		return fmt.Errorf("metrics.path must start with /")
 	}
+	if cfg.Metrics.RateLimitRPS <= 0 {
+		return fmt.Errorf("metrics.rate_limit_rps must be > 0")
+	}
+	if cfg.Metrics.RateLimitBurst <= 0 {
+		return fmt.Errorf("metrics.rate_limit_burst must be > 0")
+	}
+
+	for _, cidr := range cfg.Server.TrustedProxyCIDRs {
+		if _, _, err := net.ParseCIDR(cidr); err != nil {
+			return fmt.Errorf("invalid trusted proxy cidr %q: %w", cidr, err)
+		}
+	}
+	for _, cidr := range cfg.Metrics.AllowedCIDRs {
+		if _, _, err := net.ParseCIDR(cidr); err != nil {
+			return fmt.Errorf("invalid metrics allowed cidr %q: %w", cidr, err)
+		}
+	}
+
+	if len(cfg.Providers) == 0 {
+		return fmt.Errorf("at least one provider must be configured")
+	}
 
 	seenProviders := make(map[string]struct{}, len(cfg.Providers))
-
 	for _, provider := range cfg.Providers {
-		name := strings.TrimSpace(provider.Name)
-		if name == "" {
+		if provider.Name == "" {
 			return fmt.Errorf("provider name cannot be empty")
 		}
-
-		if _, exists := seenProviders[name]; exists {
-			return fmt.Errorf("duplicate provider name: %s", name)
+		if _, exists := seenProviders[provider.Name]; exists {
+			return fmt.Errorf("duplicate provider name: %s", provider.Name)
 		}
-		seenProviders[name] = struct{}{}
+		seenProviders[provider.Name] = struct{}{}
 
-		if strings.TrimSpace(provider.BaseURL) == "" {
-			return fmt.Errorf("provider %q base_url cannot be empty", name)
+		if err := validateProviderBaseURL(provider.Name, provider.BaseURL); err != nil {
+			return err
 		}
-
 		if len(provider.Models) == 0 {
-			return fmt.Errorf("provider %q must configure at least one model", name)
+			return fmt.Errorf("provider %q must configure at least one model", provider.Name)
 		}
 	}
 
 	return nil
+}
+
+func validatePositiveDuration(fieldName, raw string) error {
+	d, err := time.ParseDuration(strings.TrimSpace(raw))
+	if err != nil {
+		return fmt.Errorf("%s is invalid: %w", fieldName, err)
+	}
+	if d <= 0 {
+		return fmt.Errorf("%s must be > 0", fieldName)
+	}
+	return nil
+}
+
+func validateProviderBaseURL(providerName, raw string) error {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return fmt.Errorf("provider %q base_url is invalid: %w", providerName, err)
+	}
+	if parsed.Scheme == "" || parsed.Host == "" {
+		return fmt.Errorf("provider %q base_url must include scheme and host", providerName)
+	}
+	switch parsed.Scheme {
+	case "https":
+		return nil
+	case "http":
+		if isPrivateOrLoopbackHost(parsed.Hostname()) {
+			return nil
+		}
+		return fmt.Errorf("provider %q base_url must use https unless it points to a private or loopback host", providerName)
+	default:
+		return fmt.Errorf("provider %q base_url must use http or https", providerName)
+	}
+}
+
+func isPrivateOrLoopbackHost(host string) bool {
+	host = strings.TrimSpace(host)
+	if host == "localhost" {
+		return true
+	}
+
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+
+	if ip.IsLoopback() || ip.IsPrivate() {
+		return true
+	}
+	return false
+}
+
+func providerNames(providers []ProviderConfig) []string {
+	names := make([]string, 0, len(providers))
+	for _, provider := range providers {
+		if provider.Name != "" {
+			names = append(names, provider.Name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+func uniqueNonEmpty(items []string) []string {
+	if len(items) == 0 {
+		return nil
+	}
+
+	seen := make(map[string]struct{}, len(items))
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		normalized := strings.TrimSpace(item)
+		if normalized == "" {
+			continue
+		}
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		out = append(out, normalized)
+	}
+	return out
+}
+
+func mergeUnique(base []string, extra []string) []string {
+	return uniqueNonEmpty(append(base, extra...))
+}
+
+func splitEnvList(raw string) []string {
+	fields := strings.FieldsFunc(raw, func(r rune) bool {
+		switch r {
+		case ',', '\n', '\r', ';':
+			return true
+		default:
+			return false
+		}
+	})
+	return uniqueNonEmpty(fields)
 }

@@ -1,0 +1,9 @@
+.git
+.github
+.vscode
+.env
+.env.*
+config.yaml
+*.log
+build/
+llm-gateway
