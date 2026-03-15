@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fxwio/go-llm-gateway/internal/config"
 	gatewaymetrics "github.com/fxwio/go-llm-gateway/internal/metrics"
 	"github.com/fxwio/go-llm-gateway/internal/model"
 )
@@ -25,6 +26,7 @@ func (rw *metricsResponseWriter) Write(b []byte) (int, error) {
 	if rw.statusCode == 0 {
 		rw.statusCode = http.StatusOK
 	}
+
 	n, err := rw.ResponseWriter.Write(b)
 	rw.bytes += n
 	return n, err
@@ -52,9 +54,9 @@ func MetricsMiddleware(next http.Handler) http.Handler {
 		}
 
 		durationSeconds := time.Since(start).Seconds()
-
 		provider := "unknown"
 		targetModel := "unknown"
+
 		if ctxVal := r.Context().Value(GatewayContextKey); ctxVal != nil {
 			if gCtx, ok := ctxVal.(*model.GatewayContext); ok && gCtx != nil {
 				if gCtx.TargetProvider != "" {
@@ -91,7 +93,11 @@ func metricsRouteLabel(r *http.Request) string {
 		return "chat_completions"
 	case r.Method == http.MethodGet && r.URL.Path == "/health":
 		return "health"
-	case r.URL.Path == "/metrics":
+	case r.Method == http.MethodGet && r.URL.Path == "/health/live":
+		return "health_live"
+	case r.Method == http.MethodGet && r.URL.Path == "/health/ready":
+		return "health_ready"
+	case config.GlobalConfig != nil && config.GlobalConfig.Metrics.Path != "" && r.URL.Path == config.GlobalConfig.Metrics.Path:
 		return "metrics"
 	default:
 		return "unknown"
@@ -105,7 +111,7 @@ func normalizeCacheStatus(v string) string {
 	case "MISS":
 		return "miss"
 	case "MISS-SHARED":
-		return "shared"
+		return "miss_shared"
 	case "BYPASS":
 		return "bypass"
 	default:

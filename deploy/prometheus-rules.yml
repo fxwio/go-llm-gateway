@@ -1,0 +1,56 @@
+groups:
+  - name: llm-gateway.rules
+    rules:
+      - alert: GatewayHigh5xxRate
+        expr: |
+          sum(rate(gateway_requests_total{status_code=~"5.."}[5m]))
+          /
+          clamp_min(sum(rate(gateway_requests_total[5m])), 1)
+          > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Gateway 5xx ratio is above 5%"
+          description: "The AI gateway is returning more than 5% 5xx responses for 10 minutes."
+
+      - alert: GatewayAllUpstreamsUnavailable
+        expr: sum(gateway_upstream_provider_health) == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "All upstream providers are unavailable"
+          description: "Every configured upstream provider is unhealthy for at least 2 minutes."
+
+      - alert: GatewayCircuitBreakerOpen
+        expr: max(gateway_circuit_breaker_state) >= 2
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A circuit breaker is open"
+          description: "At least one upstream circuit breaker has stayed open for 2 minutes."
+
+      - alert: GatewayCacheHitRateDrop
+        expr: |
+          (
+            sum(rate(gateway_cache_requests_total{result="hit"}[15m]))
+            /
+            clamp_min(sum(rate(gateway_cache_requests_total{result=~"hit|miss|miss_shared"}[15m])), 1)
+          ) < 0.20
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Gateway cache hit ratio is low"
+          description: "Cache hit ratio is below 20% for 15 minutes."
+
+      - alert: GatewayAuditQueueBacklog
+        expr: max_over_time(gateway_audit_queue_depth[5m]) > 8000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Audit queue backlog is high"
+          description: "The in-memory audit queue has stayed above 8000 records for 5 minutes."

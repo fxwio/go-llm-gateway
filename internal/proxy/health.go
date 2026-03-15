@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/fxwio/go-llm-gateway/internal/config"
+	gatewaymetrics "github.com/fxwio/go-llm-gateway/internal/metrics"
 	"github.com/fxwio/go-llm-gateway/pkg/logger"
 	"go.uber.org/zap"
 )
@@ -31,14 +32,18 @@ var (
 func initUpstreamHealthMonitor(transport http.RoundTripper) {
 	providerMonitorOnce.Do(func() {
 		seedProviderStatuses()
+
 		interval, _ := time.ParseDuration(config.GlobalConfig.Upstream.HealthCheckInterval)
 		if interval <= 0 {
 			interval = 15 * time.Second
 		}
+
 		client := &http.Client{Transport: transport}
+
 		go func() {
 			ticker := time.NewTicker(interval)
 			defer ticker.Stop()
+
 			for {
 				for _, provider := range config.GlobalConfig.Providers {
 					probeProvider(client, provider)
@@ -52,14 +57,17 @@ func initUpstreamHealthMonitor(transport http.RoundTripper) {
 func seedProviderStatuses() {
 	providerHealthMu.Lock()
 	defer providerHealthMu.Unlock()
+
 	for _, provider := range config.GlobalConfig.Providers {
-		providerHealthMap[provider.Name] = ProviderDependencyStatus{
+		status := ProviderDependencyStatus{
 			Name:      provider.Name,
 			BaseURL:   provider.BaseURL,
 			Healthy:   true,
 			Source:    "bootstrap",
 			UpdatedAt: time.Now(),
 		}
+		providerHealthMap[provider.Name] = status
+		setProviderHealthMetric(provider.Name, true)
 	}
 }
 
@@ -71,6 +79,7 @@ func probeProvider(client *http.Client, provider config.ProviderConfig) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
+
 	probeURL := strings.TrimRight(provider.BaseURL, "/")
 	if path := strings.TrimSpace(provider.HealthCheckPath); path != "" {
 		probeURL += "/" + strings.TrimLeft(path, "/")
@@ -81,6 +90,7 @@ func probeProvider(client *http.Client, provider config.ProviderConfig) {
 		updateProviderHealth(provider.Name, provider.BaseURL, false, 0, err, "active")
 		return
 	}
+
 	resp, err := client.Do(req)
 	if err != nil {
 		updateProviderHealth(provider.Name, provider.BaseURL, false, 0, err, "active")
@@ -101,6 +111,7 @@ func markPassiveProbeResult(providerName, baseURL string, resp *http.Response, e
 	if resp != nil {
 		statusCode = resp.StatusCode
 	}
+
 	healthy := err == nil && resp != nil && resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests
 	updateProviderHealth(providerName, baseURL, healthy, statusCode, err, "passive")
 }
@@ -121,16 +132,20 @@ func updateProviderHealth(providerName, baseURL string, healthy bool, statusCode
 	providerHealthMu.Lock()
 	providerHealthMap[providerName] = status
 	providerHealthMu.Unlock()
+	setProviderHealthMetric(providerName, healthy)
 
 	if healthy {
-		logger.Log.Debug("Upstream provider healthy",
+		logger.Log.Debug(
+			"Upstream provider healthy",
 			zap.String("provider", providerName),
 			zap.String("source", source),
 			zap.Int("status_code", statusCode),
 		)
 		return
 	}
-	logger.Log.Warn("Upstream provider unhealthy",
+
+	logger.Log.Warn(
+		"Upstream provider unhealthy",
 		zap.String("provider", providerName),
 		zap.String("source", source),
 		zap.Int("status_code", statusCode),
@@ -141,11 +156,20 @@ func updateProviderHealth(providerName, baseURL string, healthy bool, statusCode
 func GetUpstreamStatuses() map[string]ProviderDependencyStatus {
 	providerHealthMu.RLock()
 	defer providerHealthMu.RUnlock()
+
 	result := make(map[string]ProviderDependencyStatus, len(providerHealthMap))
 	for name, status := range providerHealthMap {
 		result[name] = status
 	}
 	return result
+}
+
+func setProviderHealthMetric(provider string, healthy bool) {
+	value := 0.0
+	if healthy {
+		value = 1
+	}
+	gatewaymetrics.UpstreamProviderHealth.WithLabelValues(provider).Set(value)
 }
 
 func errStatusUnhealthy(statusCode int) error {

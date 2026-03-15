@@ -1,0 +1,123 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "graphTooltip": 0,
+  "panels": [
+    {
+      "title": "Gateway Request Rate",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "targets": [
+        {
+          "expr": "sum(rate(gateway_requests_total[5m]))",
+          "legendFormat": "rps"
+        }
+      ]
+    },
+    {
+      "title": "Gateway P95 / P99 Latency",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(gateway_request_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(gateway_request_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p99"
+        }
+      ]
+    },
+    {
+      "title": "Gateway 5xx Ratio",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 8},
+      "targets": [
+        {
+          "expr": "sum(rate(gateway_requests_total{status_code=~\"5..\"}[5m])) / clamp_min(sum(rate(gateway_requests_total[5m])), 1)",
+          "legendFormat": "5xx ratio"
+        }
+      ]
+    },
+    {
+      "title": "Cache Hit Ratio",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 8},
+      "targets": [
+        {
+          "expr": "sum(rate(gateway_cache_requests_total{result=\"hit\"}[5m])) / clamp_min(sum(rate(gateway_cache_requests_total{result=~\"hit|miss|miss_shared\"}[5m])), 1)",
+          "legendFormat": "cache hit ratio"
+        }
+      ]
+    },
+    {
+      "title": "Upstream Retries & Failovers",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 8},
+      "targets": [
+        {
+          "expr": "sum(rate(gateway_upstream_retries_total[5m])) by (provider)",
+          "legendFormat": "retry {{provider}}"
+        },
+        {
+          "expr": "sum(rate(gateway_upstream_failovers_total[5m])) by (from_provider,to_provider)",
+          "legendFormat": "failover {{from_provider}} -> {{to_provider}}"
+        }
+      ]
+    },
+    {
+      "title": "Provider Health",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 16},
+      "targets": [
+        {
+          "expr": "gateway_upstream_provider_health",
+          "legendFormat": "{{provider}}"
+        }
+      ]
+    },
+    {
+      "title": "Circuit Breaker State",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 16},
+      "targets": [
+        {
+          "expr": "gateway_circuit_breaker_state",
+          "legendFormat": "{{breaker}}"
+        }
+      ]
+    },
+    {
+      "title": "Audit Queue Depth / Drops",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 16},
+      "targets": [
+        {
+          "expr": "gateway_audit_queue_depth",
+          "legendFormat": "queue depth"
+        },
+        {
+          "expr": "increase(gateway_audit_records_dropped_total[5m])",
+          "legendFormat": "dropped / 5m"
+        }
+      ]
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": ["llm-gateway", "observability"],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timezone": "",
+  "title": "Go LLM Gateway Overview",
+  "version": 1
+}

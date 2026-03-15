@@ -6,8 +6,7 @@ import (
 )
 
 var (
-	// 请求总量：按 provider / model / status_code / cache_status 统计。
-	// cache_status 目前包含 hit / miss / shared / bypass。
+	// RequestTotal 统计网关入口请求总量，按 provider / model / status_code / cache_status 维度聚合。
 	RequestTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "gateway_requests_total",
@@ -16,20 +15,17 @@ var (
 		[]string{"provider", "model", "status_code", "cache_status"},
 	)
 
-	// 请求延迟：单位必须是 seconds，bucket 手工选择，覆盖毫秒级命中到长耗时推理。
+	// RequestDuration 统计网关入口请求总时延，覆盖缓存命中、短请求与长推理场景。
 	RequestDuration = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
-			Name: "gateway_request_duration_seconds",
-			Help: "Histogram of completed HTTP request latencies in seconds.",
-			Buckets: []float64{
-				0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300,
-			},
+			Name:    "gateway_request_duration_seconds",
+			Help:    "Histogram of completed HTTP request latencies in seconds.",
+			Buckets: []float64{0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300},
 		},
 		[]string{"provider", "model", "status_code", "cache_status"},
 	)
 
-	// 当前正在处理中的请求数。
-	// 为了控制标签基数，只保留 route 维度，不带 request_id / client_ip 之类高基数标签。
+	// RequestsInFlight 统计当前正在处理的请求数，仅保留 route 维度避免高基数标签爆炸。
 	RequestsInFlight = promauto.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "gateway_requests_in_flight",
@@ -38,7 +34,7 @@ var (
 		[]string{"route"},
 	)
 
-	// 缓存请求总量：hit / miss / shared / bypass。
+	// CacheRequestsTotal 统计缓存命中情况。
 	CacheRequestsTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "gateway_cache_requests_total",
@@ -47,12 +43,83 @@ var (
 		[]string{"provider", "model", "result"},
 	)
 
-	// Token 消耗总量。
+	// TokenUsageTotal 统计模型 token 消耗。
 	TokenUsageTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "gateway_tokens_total",
 			Help: "Total number of AI tokens consumed.",
 		},
 		[]string{"provider", "model", "token_type"},
+	)
+
+	// UpstreamRequestsTotal 统计每一次上游尝试，而不是仅统计最终网关响应。
+	UpstreamRequestsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "gateway_upstream_requests_total",
+			Help: "Total number of upstream provider attempts made by the gateway.",
+		},
+		[]string{"provider", "model", "status_code", "result"},
+	)
+
+	// UpstreamRequestDuration 统计单次上游尝试时延。
+	UpstreamRequestDuration = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "gateway_upstream_request_duration_seconds",
+			Help:    "Histogram of upstream provider request latencies in seconds.",
+			Buckets: []float64{0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300},
+		},
+		[]string{"provider", "model", "status_code"},
+	)
+
+	// UpstreamRetriesTotal 统计可重试错误触发次数。
+	UpstreamRetriesTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "gateway_upstream_retries_total",
+			Help: "Total number of retryable upstream failures observed by the gateway.",
+		},
+		[]string{"provider", "model", "reason"},
+	)
+
+	// UpstreamFailoversTotal 统计 provider 之间的故障切换。
+	UpstreamFailoversTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "gateway_upstream_failovers_total",
+			Help: "Total number of provider failovers performed by the gateway.",
+		},
+		[]string{"from_provider", "to_provider", "model", "reason"},
+	)
+
+	// UpstreamProviderHealth 暴露每个 provider 最近一次健康状态，1 为健康，0 为不健康。
+	UpstreamProviderHealth = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "gateway_upstream_provider_health",
+			Help: "Health state of upstream providers observed by active/passive checks. 1 means healthy.",
+		},
+		[]string{"provider"},
+	)
+
+	// CircuitBreakerState 暴露熔断器状态：0=closed, 1=half_open, 2=open。
+	CircuitBreakerState = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "gateway_circuit_breaker_state",
+			Help: "Current circuit breaker state per breaker key. 0=closed, 1=half_open, 2=open.",
+		},
+		[]string{"breaker"},
+	)
+
+	// AuditQueueDepth 暴露当前审计队列长度，便于观察积压。
+	AuditQueueDepth = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "gateway_audit_queue_depth",
+			Help: "Current number of pending billing audit records in the in-memory queue.",
+		},
+	)
+
+	// AuditDroppedTotal 统计审计队列满时被丢弃的记录数。
+	AuditDroppedTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "gateway_audit_records_dropped_total",
+			Help: "Total number of audit records dropped because the in-memory queue was full.",
+		},
 	)
 )

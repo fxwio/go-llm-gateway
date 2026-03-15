@@ -6,12 +6,14 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/fxwio/go-llm-gateway/internal/adapter"
 	"github.com/fxwio/go-llm-gateway/internal/config"
+	gatewaymetrics "github.com/fxwio/go-llm-gateway/internal/metrics"
 	"github.com/fxwio/go-llm-gateway/internal/middleware"
 	"github.com/fxwio/go-llm-gateway/internal/model"
 	"github.com/fxwio/go-llm-gateway/internal/response"
@@ -54,6 +56,7 @@ func NewGatewayProxy() http.Handler {
 			client: &http.Client{Transport: transport},
 		}
 	})
+
 	return gatewayProxy
 }
 
@@ -96,11 +99,19 @@ func (h *gatewayProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	var finalErr error
+	var (
+		finalErr        error
+		totalRetries    int
+		lastRetryReason = "unknown"
+	)
+
 	for providerIndex, provider := range gatewayCtx.CandidateProviders {
 		gatewayCtx.SetActiveProvider(provider)
 		attemptBudget := effectiveRetryCount(provider) + 1
+
 		for attempt := 1; attempt <= attemptBudget; attempt++ {
+			attemptStart := time.Now()
+
 			upstreamReq, err := buildUpstreamRequest(r, bodyCtx.UpstreamBody, gatewayCtx)
 			if err != nil {
 				response.WriteOpenAIError(
@@ -116,43 +127,79 @@ func (h *gatewayProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 
 			resp, err := h.client.Do(upstreamReq)
 			markPassiveProbeResult(provider.Name, provider.BaseURL, resp, err)
+			observeUpstreamAttempt(provider.Name, gatewayCtx.TargetModel, resp, err, time.Since(attemptStart), "attempt")
+
 			if shouldRetryResponse(resp, err) {
 				finalErr = err
+				lastRetryReason = upstreamRetryReason(resp, err)
+				gatewaymetrics.UpstreamRetriesTotal.WithLabelValues(
+					provider.Name,
+					gatewayCtx.TargetModel,
+					lastRetryReason,
+				).Inc()
+
 				if resp != nil && resp.Body != nil {
 					_ = resp.Body.Close()
 				}
+
+				totalRetries++
 				logRetryAttempt(r, gatewayCtx, provider.Name, providerIndex, attemptBudget, attempt, resp, err)
+
 				if attempt < attemptBudget {
 					time.Sleep(retryBackoff())
 					continue
 				}
 				break
 			}
+
 			if err != nil {
 				finalErr = err
 				break
 			}
+
+			w.Header().Set("X-Gateway-Upstream-Provider", provider.Name)
+			w.Header().Set("X-Gateway-Upstream-Retries", strconv.Itoa(totalRetries))
+			w.Header().Set("X-Gateway-Failovers", strconv.Itoa(gatewayCtx.FailoverCount))
+
+			observeUpstreamAttempt(provider.Name, gatewayCtx.TargetModel, resp, nil, 0, "final_success")
+
 			if err := writeUpstreamResponse(w, resp); err != nil {
 				finalErr = err
-				logger.Log.Error("Failed while streaming upstream response",
+				logger.Log.Error(
+					"Failed while streaming upstream response",
 					append([]zap.Field{
 						zap.String("provider", provider.Name),
+						zap.String("model", gatewayCtx.TargetModel),
+						zap.Int("failover_count", gatewayCtx.FailoverCount),
+						zap.Int("upstream_retries", totalRetries),
 						zap.Error(err),
 					}, requestMetaFields(r)...)...,
 				)
 			}
+
 			return
 		}
 
 		gatewayCtx.FailoverCount++
 		gatewayCtx.AttemptedProviders = append(gatewayCtx.AttemptedProviders, provider.Name)
-		logFailover(r, gatewayCtx, provider.Name, providerIndex)
+		nextProvider := nextProviderName(gatewayCtx.CandidateProviders, providerIndex+1)
+		gatewaymetrics.UpstreamFailoversTotal.WithLabelValues(
+			provider.Name,
+			nextProvider,
+			gatewayCtx.TargetModel,
+			lastRetryReason,
+		).Inc()
+		logFailover(r, gatewayCtx, provider.Name, nextProvider, providerIndex, lastRetryReason)
 	}
+
+	w.Header().Set("X-Gateway-Upstream-Retries", strconv.Itoa(totalRetries))
+	w.Header().Set("X-Gateway-Failovers", strconv.Itoa(gatewayCtx.FailoverCount))
 
 	message := "All configured upstream providers are temporarily unavailable."
 	if finalErr != nil {
-		message = message + " Last error: " + finalErr.Error()
+		message += " Last error: " + finalErr.Error()
 	}
+
 	response.WriteOpenAIError(
 		w,
 		http.StatusServiceUnavailable,
@@ -179,6 +226,7 @@ func buildUpstreamRequest(orig *http.Request, upstreamBody []byte, gatewayCtx *m
 	if err != nil {
 		return nil, err
 	}
+
 	req.Header = cloneHeader(orig.Header)
 	req.Host = targetURL.Host
 	req.ContentLength = int64(len(upstreamBody))
@@ -197,6 +245,7 @@ func buildUpstreamRequest(orig *http.Request, upstreamBody []byte, gatewayCtx *m
 		req.Header.Set("x-api-key", gatewayCtx.APIKey)
 		req.Header.Set("anthropic-version", "2023-06-01")
 		req.Header.Del("Authorization")
+
 		if err := adapter.TranslateOpenAIToAnthropic(req); err != nil {
 			return nil, err
 		}
@@ -210,6 +259,7 @@ func buildUpstreamRequest(orig *http.Request, upstreamBody []byte, gatewayCtx *m
 
 func writeUpstreamResponse(w http.ResponseWriter, resp *http.Response) error {
 	defer resp.Body.Close()
+
 	copyResponseHeaders(w.Header(), resp.Header)
 	w.Header().Del("Server")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -258,6 +308,7 @@ func logRetryAttempt(r *http.Request, gatewayCtx *model.GatewayContext, provider
 		zap.Int("attempt", attempt),
 		zap.Int("attempt_budget", attemptBudget),
 		zap.Int("failover_count", gatewayCtx.FailoverCount),
+		zap.String("retry_reason", upstreamRetryReason(resp, err)),
 	}
 	if resp != nil {
 		fields = append(fields, zap.Int("status_code", resp.StatusCode))
@@ -266,19 +317,58 @@ func logRetryAttempt(r *http.Request, gatewayCtx *model.GatewayContext, provider
 		fields = append(fields, zap.Error(err))
 	}
 	fields = append(fields, requestMetaFields(r)...)
+
 	logger.Log.Warn("Retrying upstream provider request", fields...)
 }
 
-func logFailover(r *http.Request, gatewayCtx *model.GatewayContext, provider string, providerIndex int) {
-	logger.Log.Warn("Failing over to next upstream provider",
+func logFailover(r *http.Request, gatewayCtx *model.GatewayContext, provider string, nextProvider string, providerIndex int, reason string) {
+	logger.Log.Warn(
+		"Failing over to next upstream provider",
 		append([]zap.Field{
 			zap.String("provider", provider),
+			zap.String("next_provider", nextProvider),
 			zap.String("model", gatewayCtx.TargetModel),
 			zap.Int("provider_index", providerIndex),
 			zap.Int("failover_count", gatewayCtx.FailoverCount),
+			zap.String("reason", reason),
 			zap.Strings("attempted_providers", gatewayCtx.AttemptedProviders),
 		}, requestMetaFields(r)...)...,
 	)
+}
+
+func observeUpstreamAttempt(provider string, modelName string, resp *http.Response, err error, duration time.Duration, result string) {
+	statusCode := upstreamStatusLabel(resp, err)
+	gatewaymetrics.UpstreamRequestsTotal.WithLabelValues(provider, modelName, statusCode, result).Inc()
+	if duration > 0 {
+		gatewaymetrics.UpstreamRequestDuration.WithLabelValues(provider, modelName, statusCode).Observe(duration.Seconds())
+	}
+}
+
+func upstreamRetryReason(resp *http.Response, err error) string {
+	if err != nil {
+		return "network_error"
+	}
+	if resp == nil {
+		return "no_response"
+	}
+	return "status_" + strconv.Itoa(resp.StatusCode)
+}
+
+func upstreamStatusLabel(resp *http.Response, err error) string {
+	if err != nil {
+		return "network_error"
+	}
+	if resp == nil {
+		return "no_response"
+	}
+	return strconv.Itoa(resp.StatusCode)
+}
+
+func nextProviderName(providers []model.ProviderRoute, nextIndex int) string {
+	if nextIndex < 0 || nextIndex >= len(providers) {
+		return "none"
+	}
+	return providers[nextIndex].Name
 }
 
 func getGatewayContext(r *http.Request) (*model.GatewayContext, error) {
@@ -286,6 +376,7 @@ func getGatewayContext(r *http.Request) (*model.GatewayContext, error) {
 	if ctxVal == nil {
 		return nil, http.ErrNoCookie
 	}
+
 	gatewayCtx, ok := ctxVal.(*model.GatewayContext)
 	if !ok || gatewayCtx == nil {
 		return nil, http.ErrNoCookie
@@ -297,10 +388,12 @@ func parseAndCacheBaseURL(raw string) (*url.URL, error) {
 	if v, ok := baseURLCache.Load(raw); ok {
 		return v.(*url.URL), nil
 	}
+
 	parsed, err := url.Parse(raw)
 	if err != nil {
 		return nil, err
 	}
+
 	baseURLCache.Store(raw, parsed)
 	return parsed, nil
 }
